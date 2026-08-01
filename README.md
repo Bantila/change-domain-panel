@@ -85,22 +85,63 @@
 Скрипт лежит в этом репозитории:
 [`change-domain.sh`](https://github.com/Gemr007/change-domain-panel/blob/main/change-domain.sh)
 
+### Вариант A — разовый запуск (без установки)
+
+```bash
+sudo bash <(curl -fsSL https://raw.githubusercontent.com/Gemr007/change-domain-panel/main/change-domain.sh)
+```
+
+С флагами — допиши их после закрывающей скобки:
+
+```bash
+sudo bash <(curl -fsSL https://raw.githubusercontent.com/Gemr007/change-domain-panel/main/change-domain.sh) \
+  --role panel --old old.domain.com --new new.domain.com \
+  --cert-method cloudflare --cf-zone-new new.domain.com \
+  --dir /opt/remnawave --dry-run
+```
+
+### Вариант B — установить как команду `changedomen` (рекомендуется)
+
+Ставится один раз, дальше вызывается из любой директории:
+
+```bash
+sudo bash <(curl -fsSL https://raw.githubusercontent.com/Gemr007/change-domain-panel/main/change-domain.sh) --install
+```
+
+Это скачает скрипт в `/usr/local/bin/changedomen` и сделает его исполняемым.
+После этого:
+
+```bash
+sudo changedomen                     # интерактивный режим
+sudo changedomen --role panel ...    # с флагами
+sudo changedomen --help              # справка по флагам
+```
+
+Обновить до последней версии — просто выполни команду установки ещё раз
+(`--install` перекачивает файл заново).
+
+### Вариант C — скачать вручную
+
 ```bash
 curl -o change-domain.sh https://raw.githubusercontent.com/Gemr007/change-domain-panel/main/change-domain.sh
 chmod +x change-domain.sh
 ```
 
-Или просто скопируй файл `change-domain.sh` на сервер вручную.
-
 ## Быстрый старт
 
-Самый простой способ — запустить без флагов, скрипт спросит всё сам:
+Если скрипт уже установлен как команда (см. [Вариант B](#вариант-b--установить-как-команду-changedomen-рекомендуется)):
 
 ```bash
-sudo ./change-domain.sh
+sudo changedomen
 ```
 
-Диалог выглядит так:
+Или разово, без установки:
+
+```bash
+sudo bash <(curl -fsSL https://raw.githubusercontent.com/Gemr007/change-domain-panel/main/change-domain.sh)
+```
+
+Оба варианта переходят в интерактивный режим, скрипт спросит всё сам:
 
 ```
 На каком сервере выполняется скрипт?
@@ -140,6 +181,7 @@ sudo ./change-domain.sh
 | `--cf-token TOKEN` | нет | API Token или Global API Key Cloudflare. Если не передан — спросится интерактивно (ввод скрыт). |
 | `--acme-email EMAIL` | да, если `--cert-method acme` | Email для регистрации в Let's Encrypt (уведомления об истечении сертификата). |
 | `--dry-run` | нет | Ничего не применяет и не выпускает сертификат — только показывает, что бы сделал скрипт (проверка DNS, команда certbot, diff файлов). **Рекомендуется всегда запускать первым.** |
+| `--install` | нет | Скачивает актуальную версию скрипта в `/usr/local/bin/changedomen` и делает исполняемым — после этого скрипт доступен из любой директории как команда `changedomen`. Игнорирует остальные флаги. |
 | `-h`, `--help` | нет | Показать краткую справку по флагам и выйти. |
 
 ### Как определить тип API-ключа Cloudflare
