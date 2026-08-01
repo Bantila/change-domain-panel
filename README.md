@@ -1,4 +1,4 @@
-# change-domain-panel
+# change-domain.sh
 
 Скрипт для смены домена панели, страницы подписки и ноды в инфраструктуре
 [Remnawave](https://remna.st), установленной через
@@ -63,8 +63,8 @@
   строки домена, а не через понимание синтаксиса nginx. Именно поэтому перед
   применением всегда показывается `diff` — проверяй его.
 - **Не угадывает зону Cloudflare** по количеству сегментов домена. Домены вида
-  `curt.vltx.eu.cc` ломают наивную эвристику "последние 2 сегмента = зона"
-  (реальная зона тут — `vltx.eu.cc`, а не `eu.cc`). Поэтому зона Cloudflare
+  `sub.host.example.co.uk` ломают наивную эвристику "последние 2 сегмента = зона"
+  (реальная зона тут — `example.co.uk`, а не `co.uk`). Поэтому зона Cloudflare
   указывается явно, скрипт её не вычисляет сам.
 
 ## Требования
@@ -82,8 +82,11 @@
 
 ## Установка
 
+Скрипт лежит в этом репозитории:
+[`change-domain.sh`](https://github.com/Gemr007/change-domain-panel/blob/main/change-domain.sh)
+
 ```bash
-curl -o change-domain.sh https://raw.githubusercontent.com/<твой-репозиторий>/change-domain.sh
+curl -o change-domain.sh https://raw.githubusercontent.com/Gemr007/change-domain-panel/main/change-domain.sh
 chmod +x change-domain.sh
 ```
 
@@ -176,7 +179,7 @@ sudo ./change-domain.sh \
 | Домен | Зона в Cloudflare | Неправильная догадка "последние 2 сегмента" |
 |---|---|---|
 | `sub.example.com` | `example.com` | `example.com` (совпало случайно) |
-| `curt.vltx.eu.cc` | `vltx.eu.cc` | `eu.cc` ❌ (это НЕ зона) |
+| `sub.host.example.co.uk` | `example.co.uk` | `co.uk` ❌ (это НЕ зона, это публичный суффикс) |
 
 Если указать неправильную зону — DNS-01 challenge не пройдёт (Cloudflare не
 найдёт такую зону в твоём аккаунте), либо (если зона случайно существует, но
