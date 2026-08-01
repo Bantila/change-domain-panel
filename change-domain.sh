@@ -1,37 +1,35 @@
 #!/bin/bash
 # change-domain.sh — смена домена для инфраструктуры Remnawave, установленной
 # скриптом eGamesAPI/remnawave-reverse-proxy (nginx-вариант).
-#
-# ЧТО ДЕЛАЕТ:
-#   1. Проверяет, что новый домен указывает (A-запись) на этот сервер (или на Cloudflare-прокси).
-#   2. Выпускает новый сертификат ОДНИМ ИЗ ДВУХ методов на выбор:
-#      - Cloudflare DNS-01 (certbot --dns-cloudflare, wildcard *.зона)
-#      - ACME HTTP-01 (certbot --standalone на порту 80, без wildcard, без токена,
-#        но нужен свободный порт 80 и прямой A-record без Cloudflare-прокси)
-#      Оба метода — те же, что CERT_METHOD=1/2 в install_remnawave.sh.
-#   3. Делает бэкап .env / docker-compose.yml / nginx.conf в целевой директории.
-#   4. Заменяет старую строку домена на новую во всех трёх файлах (grep -rl + sed).
-#   5. Показывает diff и просит подтверждения ПЕРЕД применением.
-#   6. Перезапускает нужные контейнеры (remnawave-nginx / remnawave / remnanode).
-#
-# ЧЕГО НЕ ДЕЛАЕТ (проверь руками):
-#   - Не трогает Reality serverNames/Host в панели — это меняется через API/UI панели
-#     (Config Profile -> Inbound -> Host), см. remnawave.md.
-#   - Не удаляет старый сертификат и не чистит старые DNS-записи.
-#   - Не проверяет структуру nginx.conf построчно — только замена строки домена.
-#   - НЕ угадывает зону Cloudflare по домену (например для curt.vltx.eu.cc последние
-#     2 сегмента "eu.cc" НЕ являются зоной) — зону нужно указать явно (--cf-zone-new
-#     или в интерактивном вопросе), посмотрев её в дашборде Cloudflare.
-#
-# ИСПОЛЬЗОВАНИЕ:
-#   Интерактивно (спросит, где выполняется — нода или панель+подписка):
-#     sudo ./change-domain.sh
-#
-#   Неинтерактивно (для автоматизации/cron):
-#     sudo ./change-domain.sh --role panel|sub|node --old old.domain.com --new new.domain.com \
-#          --dir /opt/remnawave [--cf-email you@mail.com] [--cf-token XXXX] [--dry-run]
 
 set -euo pipefail
+
+RAW_URL="https://raw.githubusercontent.com/Gemr007/change-domain-panel/main/change-domain.sh"
+INSTALL_PATH="/usr/local/bin/changedomen"
+SCRIPT_NAME="$(basename "$0")"
+
+# --- Цвета -----------------------------------------------------------------
+if [[ -t 1 ]]; then
+    C_RESET='\033[0m'
+    C_BOLD='\033[1m'
+    C_DIM='\033[2m'
+    C_RED='\033[0;31m'
+    C_GREEN='\033[0;32m'
+    C_YELLOW='\033[0;33m'
+    C_BLUE='\033[0;34m'
+    C_MAGENTA='\033[0;35m'
+    C_CYAN='\033[0;36m'
+    C_WHITE='\033[1;37m'
+    C_BRED='\033[1;31m'
+    C_BGREEN='\033[1;32m'
+    C_BYELLOW='\033[1;33m'
+    C_BCYAN='\033[1;36m'
+    C_BMAGENTA='\033[1;35m'
+else
+    C_RESET=''; C_BOLD=''; C_DIM=''; C_RED=''; C_GREEN=''; C_YELLOW=''
+    C_BLUE=''; C_MAGENTA=''; C_CYAN=''; C_WHITE=''; C_BRED=''; C_BGREEN=''
+    C_BYELLOW=''; C_BCYAN=''; C_BMAGENTA=''
+fi
 
 ROLE=""
 OLD_DOMAIN=""
@@ -45,23 +43,54 @@ CF_ZONE_OLD=""
 ACME_EMAIL=""
 DRY_RUN=false
 
-log() { echo -e "\033[1;32m[+]\033[0m $*"; }
-warn() { echo -e "\033[1;33m[!]\033[0m $*"; }
-err() { echo -e "\033[1;31m[x]\033[0m $*"; exit 1; }
+log()  { echo -e "${C_BGREEN}[+]${C_RESET} $*"; }
+warn() { echo -e "${C_BYELLOW}[!]${C_RESET} ${C_YELLOW}$*${C_RESET}"; }
+err()  { echo -e "${C_BRED}[x]${C_RESET} ${C_RED}$*${C_RESET}" >&2; exit 1; }
+info() { echo -e "${C_BCYAN}[i]${C_RESET} $*"; }
+step() { echo -e "\n${C_BMAGENTA}━━━ $* ━━━${C_RESET}"; }
+
+banner() {
+    echo -e "${C_BCYAN}"
+    cat <<'EOF'
+   ___ _                        ___                        _
+  / __\ |__   __ _ _ __   __ _ / __\  ___  _ __ ___   ___ | |_
+ / /  | '_ \ / _` | '_ \ / _` / /   / _ \| '_ ` _ \ / _ \| __|
+/ /___| | | | (_| | | | | (_| \ \__| (_) | | | | | | (_) | |_
+\____/|_| |_|\__,_|_| |_|\__, |\____/\___/|_| |_| |_|\___/ \__|
+                         |___/
+EOF
+    echo -e "${C_RESET}${C_DIM}      смена домена панели / подписки / ноды Remnawave${C_RESET}\n"
+}
+
+do_install() {
+    [[ $EUID -ne 0 ]] && err "Установка требует root (sudo)."
+    banner
+    log "Скачиваю актуальную версию скрипта в $INSTALL_PATH..."
+    curl -fsSL "$RAW_URL" -o "$INSTALL_PATH" || err "Не удалось скачать скрипт с $RAW_URL"
+    chmod +x "$INSTALL_PATH"
+    echo -e "\n${C_BGREEN}${C_BOLD}✔ Установлено!${C_RESET} Теперь можно запускать из любой директории:"
+    echo -e "    ${C_CYAN}sudo changedomen${C_RESET}"
+    echo -e "    ${C_CYAN}sudo changedomen --role panel --old ... --new ... --dir ... --cert-method cloudflare --cf-zone-new ...${C_RESET}"
+    exit 0
+}
+
+[[ "${1:-}" == "--install" ]] && do_install
 
 usage() {
     echo "Usage:"
     echo "  Cloudflare DNS-01 (wildcard):"
-    echo "    $0 --role panel|sub|node --old OLD_DOMAIN --new NEW_DOMAIN --dir TARGET_DIR \\"
+    echo "    $SCRIPT_NAME --role panel|sub|node --old OLD_DOMAIN --new NEW_DOMAIN --dir TARGET_DIR \\"
     echo "       --cert-method cloudflare --cf-zone-new NEW_ZONE [--cf-zone-old OLD_ZONE] \\"
     echo "       [--cf-email EMAIL] [--cf-token TOKEN] [--dry-run]"
     echo ""
     echo "  ACME HTTP-01 (без wildcard, требует свободный порт 80 и прямой A-record без Cloudflare-прокси):"
-    echo "    $0 --role panel|sub|node --old OLD_DOMAIN --new NEW_DOMAIN --dir TARGET_DIR \\"
+    echo "    $SCRIPT_NAME --role panel|sub|node --old OLD_DOMAIN --new NEW_DOMAIN --dir TARGET_DIR \\"
     echo "       --cert-method acme --acme-email EMAIL [--dry-run]"
     echo ""
     echo "  --cf-zone-new  Имя зоны в Cloudflare для НОВОГО домена (то, что видно в дашборде Cloudflare,"
-    echo "                 например vltx.eu.cc — НЕ обязательно последние 2 сегмента домена)."
+    echo "                 например example.co.uk — НЕ обязательно последние 2 сегмента домена)."
+    echo ""
+    echo "  --install      Установить этот скрипт как глобальную команду 'changedomen' в /usr/local/bin."
     echo ""
     echo "Или запусти без аргументов — скрипт спросит всё интерактивно."
     exit 1
@@ -80,22 +109,24 @@ while [[ $# -gt 0 ]]; do
         --cert-method) CERT_METHOD="$2"; shift 2 ;;
         --acme-email) ACME_EMAIL="$2"; shift 2 ;;
         --dry-run) DRY_RUN=true; shift ;;
+        --install) do_install ;;
         -h|--help) usage ;;
         *) echo "Unknown arg: $1"; usage ;;
     esac
 done
 
-[[ $EUID -ne 0 ]] && { echo "Run as root (sudo)."; exit 1; }
+[[ $EUID -ne 0 ]] && { echo -e "\033[1;31m[x]\033[0m Run as root (sudo)."; exit 1; }
+
+[[ -n "$ROLE" ]] && banner
 
 # --- Интерактивный опрос, если роль/домены не переданы флагами -----------
 if [[ -z "$ROLE" ]]; then
+    banner
+    step "Шаг 1/4 — где выполняется скрипт"
+    echo -e "  ${C_BOLD}1${C_RESET}) Нода ${C_DIM}(Reality/selfsteal — SELF_STEAL_DOMAIN, обычно /opt/remnanode)${C_RESET}"
+    echo -e "  ${C_BOLD}2${C_RESET}) Панель + подписка ${C_DIM}(FRONT_END_DOMAIN / SUB_PUBLIC_DOMAIN, обычно /opt/remnawave)${C_RESET}"
     echo ""
-    echo "На каком сервере выполняется скрипт?"
-    echo ""
-    echo "  1. Нода (Reality/selfsteal — SELF_STEAL_DOMAIN, обычно /opt/remnanode)"
-    echo "  2. Панель + подписка (FRONT_END_DOMAIN / SUB_PUBLIC_DOMAIN, обычно /opt/remnawave)"
-    echo ""
-    read -rp "Выбери 1 или 2: " SERVER_KIND
+    read -rp "$(echo -e "${C_CYAN}Выбери 1 или 2:${C_RESET} ")" SERVER_KIND
 
     case "$SERVER_KIND" in
         1)
@@ -104,12 +135,11 @@ if [[ -z "$ROLE" ]]; then
             ;;
         2)
             echo ""
-            echo "Что меняем?"
-            echo "  1. Домен панели (FRONT_END_DOMAIN)"
-            echo "  2. Домен подписки (SUB_PUBLIC_DOMAIN)"
-            echo "  3. Оба (панель и подписка на одном сервере)"
+            echo -e "  ${C_BOLD}1${C_RESET}) Домен панели ${C_DIM}(FRONT_END_DOMAIN)${C_RESET}"
+            echo -e "  ${C_BOLD}2${C_RESET}) Домен подписки ${C_DIM}(SUB_PUBLIC_DOMAIN)${C_RESET}"
+            echo -e "  ${C_BOLD}3${C_RESET}) Оба ${C_DIM}(панель и подписка на одном сервере)${C_RESET}"
             echo ""
-            read -rp "Выбери 1, 2 или 3: " PANEL_SUB_KIND
+            read -rp "$(echo -e "${C_CYAN}Что меняем — 1, 2 или 3:${C_RESET} ")" PANEL_SUB_KIND
             case "$PANEL_SUB_KIND" in
                 1) ROLE="panel" ;;
                 2) ROLE="sub" ;;
@@ -121,52 +151,53 @@ if [[ -z "$ROLE" ]]; then
         *) err "Некорректный выбор." ;;
     esac
 
-    read -rp "Директория установки [$DEFAULT_DIR]: " INPUT_DIR
+    step "Шаг 2/4 — директория и домены"
+    read -rp "$(echo -e "${C_CYAN}Директория установки${C_RESET} ${C_DIM}[$DEFAULT_DIR]${C_RESET}: ")" INPUT_DIR
     TARGET_DIR="${INPUT_DIR:-$DEFAULT_DIR}"
 
-    read -rp "Старый домен (который меняем): " OLD_DOMAIN
-    read -rp "Новый домен: " NEW_DOMAIN
+    read -rp "$(echo -e "${C_CYAN}Старый домен (который меняем):${C_RESET} ")" OLD_DOMAIN
+    read -rp "$(echo -e "${C_CYAN}Новый домен:${C_RESET} ")" NEW_DOMAIN
 
+    step "Шаг 3/4 — метод сертификата"
+    echo -e "  ${C_BOLD}1${C_RESET}) Cloudflare DNS-01 ${C_DIM}(нужен API-токен, поддерживает wildcard)${C_RESET}"
+    echo -e "  ${C_BOLD}2${C_RESET}) ACME HTTP-01 ${C_DIM}(без токена, БЕЗ wildcard, нужен свободный порт 80${C_RESET}"
+    echo -e "     ${C_DIM}и домен должен указывать напрямую на сервер — без Cloudflare-прокси)${C_RESET}"
     echo ""
-    echo "Каким методом выпускать сертификат?"
-    echo "  1. Cloudflare DNS-01 (нужен API-токен, поддерживает wildcard)"
-    echo "  2. ACME HTTP-01 (без токена, но БЕЗ wildcard, нужен свободный порт 80"
-    echo "     и домен должен указывать напрямую на сервер — без Cloudflare-прокси)"
-    echo ""
-    read -rp "Выбери 1 или 2: " CERT_METHOD_CHOICE
+    read -rp "$(echo -e "${C_CYAN}Выбери 1 или 2:${C_RESET} ")" CERT_METHOD_CHOICE
     case "$CERT_METHOD_CHOICE" in
         1)
             CERT_METHOD="cloudflare"
             echo ""
-            echo "Теперь нужно точно указать имя ЗОНЫ в Cloudflare для нового домена."
-            echo "Это НЕ всегда последние 2 сегмента домена (например для curt.vltx.eu.cc"
-            echo "зона в Cloudflare — vltx.eu.cc, а не eu.cc). Посмотри в дашборде Cloudflare."
+            echo -e "${C_DIM}Нужно точно указать имя ЗОНЫ в Cloudflare для нового домена.${C_RESET}"
+            echo -e "${C_DIM}Это НЕ всегда последние 2 сегмента домена (например для sub.host.example.co.uk${C_RESET}"
+            echo -e "${C_DIM}зона в Cloudflare — example.co.uk, а не co.uk). Посмотри в дашборде Cloudflare.${C_RESET}"
             echo ""
-            read -rp "Имя зоны в Cloudflare для НОВОГО домена ($NEW_DOMAIN): " CF_ZONE_NEW
+            read -rp "$(echo -e "${C_CYAN}Имя зоны в Cloudflare для НОВОГО домена (${C_WHITE}$NEW_DOMAIN${C_CYAN}):${C_RESET} ")" CF_ZONE_NEW
             if [[ "$NEW_DOMAIN" != "$CF_ZONE_NEW" && "$NEW_DOMAIN" != *".$CF_ZONE_NEW" ]]; then
                 err "$NEW_DOMAIN не является поддоменом зоны $CF_ZONE_NEW. Проверь написание."
             fi
             ;;
         2)
             CERT_METHOD="acme"
-            read -rp "Email для Let's Encrypt (уведомления об истечении): " ACME_EMAIL
+            read -rp "$(echo -e "${C_CYAN}Email для Let's Encrypt:${C_RESET} ")" ACME_EMAIL
             ;;
         *) err "Некорректный выбор." ;;
     esac
 
     if [[ "$ROLE" == "both" ]]; then
-        echo "Для варианта 'оба' скрипт применит одну и ту же замену старый->новый"
-        echo "во всех файлах, где встречается старый домен панели или подписки."
-        echo "Если у панели и подписки РАЗНЫЕ домены — запусти скрипт дважды (по одному разу на каждый)."
-        read -rp "Продолжить с этими old/new для обоих сразу? (y/N): " c
+        step "Шаг 4/4 — подтверждение"
+        warn "Для варианта 'оба' скрипт применит одну и ту же замену старый->новый"
+        warn "во всех файлах, где встречается старый домен панели или подписки."
+        warn "Если у панели и подписки РАЗНЫЕ домены — запусти скрипт дважды (по одному разу на каждый)."
+        read -rp "$(echo -e "${C_CYAN}Продолжить с этими old/new для обоих сразу? (y/N):${C_RESET} ")" c
         [[ "$c" != "y" && "$c" != "Y" ]] && err "Отменено. Запусти скрипт отдельно для панели и отдельно для подписки."
         ROLE="panel_and_sub"
     fi
 fi
 
 [[ -z "$OLD_DOMAIN" || -z "$NEW_DOMAIN" || -z "$TARGET_DIR" ]] && usage
-[[ "$ROLE" != "panel" && "$ROLE" != "sub" && "$ROLE" != "node" && "$ROLE" != "panel_and_sub" ]] && { echo "role must be panel|sub|node"; exit 1; }
-[[ ! -d "$TARGET_DIR" ]] && { echo "Directory $TARGET_DIR not found."; exit 1; }
+[[ "$ROLE" != "panel" && "$ROLE" != "sub" && "$ROLE" != "node" && "$ROLE" != "panel_and_sub" ]] && err "role must be panel|sub|node"
+[[ ! -d "$TARGET_DIR" ]] && err "Directory $TARGET_DIR not found."
 [[ "$CERT_METHOD" != "cloudflare" && "$CERT_METHOD" != "acme" ]] && err "Укажи --cert-method cloudflare или acme."
 
 if [[ "$CERT_METHOD" == "cloudflare" ]]; then
@@ -178,7 +209,9 @@ else
     [[ -z "$ACME_EMAIL" ]] && err "Для --cert-method acme нужен --acme-email."
 fi
 
-# --- 1. Проверка DNS нового домена --------------------------------------
+echo -e "${C_DIM}${OLD_DOMAIN} → ${C_RESET}${C_WHITE}${NEW_DOMAIN}${C_RESET}  ${C_DIM}[${ROLE} / ${CERT_METHOD}]${C_RESET}\n"
+
+step "Шаг 1/3 — проверка DNS и выпуск сертификата"
 log "Проверяю DNS для $NEW_DOMAIN..."
 DOMAIN_IP=$(dig +short A "$NEW_DOMAIN" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -n1 || true)
 SERVER_IP=$(curl -s -4 ifconfig.me || curl -s -4 api.ipify.org || true)
@@ -200,7 +233,7 @@ else
     log "OK: $NEW_DOMAIN указывает на этот сервер ($SERVER_IP)."
 fi
 
-# --- 2. Выпуск сертификата ------------------------------------------------
+# --- Выпуск сертификата ------------------------------------------------
 if ! command -v certbot >/dev/null 2>&1; then
     err "certbot не установлен. Установи: apt-get install -y certbot python3-certbot-dns-cloudflare"
 fi
@@ -294,7 +327,8 @@ else
     fi
 fi
 
-# --- 3. Бэкап и замена домена в конфигах ---------------------------------
+# --- Бэкап и замена домена в конфигах ---------------------------------
+step "Шаг 2/3 — бэкап и подготовка изменений"
 TS=$(date +%Y%m%d-%H%M%S)
 BACKUP_DIR="${TARGET_DIR}/domain-change-backup-${TS}"
 mkdir -p "$BACKUP_DIR"
@@ -312,7 +346,7 @@ log "Файлы, где встречается $OLD_DOMAIN:"
 MATCHED_FILES=()
 for f in "${FILES_TO_PATCH[@]}"; do
     if grep -q "$OLD_DOMAIN" "$f"; then
-        echo "   - $f"
+        echo -e "   ${C_CYAN}-${C_RESET} $f"
         MATCHED_FILES+=("$f")
     fi
 done
@@ -328,8 +362,10 @@ done
 log "Бэкап сохранён в $BACKUP_DIR"
 
 for f in "${MATCHED_FILES[@]}"; do
-    echo "----- diff для $f -----"
-    diff -u "$f" <(sed "s/${OLD_DOMAIN//./\\.}/${NEW_DOMAIN}/g" "$f") || true
+    echo -e "\n${C_BOLD}${C_WHITE}── diff для $f ──${C_RESET}"
+    diff -u "$f" <(sed "s/${OLD_DOMAIN//./\\.}/${NEW_DOMAIN}/g" "$f") \
+        | sed -E "s/^(\+.*)/$(printf '%b' "${C_GREEN}")\1$(printf '%b' "${C_RESET}")/; s/^(-.*)/$(printf '%b' "${C_RED}")\1$(printf '%b' "${C_RESET}")/; s/^(@@.*@@)/$(printf '%b' "${C_CYAN}")\1$(printf '%b' "${C_RESET}")/" \
+        || true
 done
 
 if $DRY_RUN; then
@@ -337,7 +373,8 @@ if $DRY_RUN; then
     exit 0
 fi
 
-read -rp "Применить эти изменения? (y/N): " confirm
+echo ""
+read -rp "$(echo -e "${C_BYELLOW}Применить эти изменения? (y/N):${C_RESET} ")" confirm
 [[ "$confirm" != "y" && "$confirm" != "Y" ]] && { warn "Отменено."; exit 1; }
 
 for f in "${MATCHED_FILES[@]}"; do
@@ -345,7 +382,7 @@ for f in "${MATCHED_FILES[@]}"; do
 done
 log "Домен заменён в: ${MATCHED_FILES[*]}"
 
-# --- 4. Если docker-compose.yml монтирует сертификаты по старому домену (base или
+# --- Если docker-compose.yml монтирует сертификаты по старому домену (base или
 #        сам OLD_DOMAIN, в зависимости от того как ставился сертификат) — подставим
 #        пути на новый сертификат. Ищем ЛЮБУЮ строку /etc/letsencrypt/live/<что-то>,
 #        где <что-то> является префиксом OLD_DOMAIN (т.е. OLD_DOMAIN совпадает с ним
@@ -362,7 +399,8 @@ if [[ -f "$COMPOSE_FILE" ]]; then
     done
 fi
 
-# --- 5. Перезапуск ---------------------------------------------------------
+# --- Перезапуск ---------------------------------------------------------
+step "Шаг 3/3 — перезапуск контейнеров"
 cd "$TARGET_DIR"
 case "$ROLE" in
     panel)
@@ -388,4 +426,5 @@ case "$ROLE" in
         ;;
 esac
 
-log "Готово. Проверь: curl -Iv https://$NEW_DOMAIN и docker compose logs -f"
+echo -e "\n${C_BGREEN}${C_BOLD}✔ Готово!${C_RESET} ${C_WHITE}${NEW_DOMAIN}${C_RESET} настроен."
+echo -e "${C_DIM}Проверь:${C_RESET} ${C_CYAN}curl -Iv https://$NEW_DOMAIN${C_RESET}  ${C_DIM}и${C_RESET}  ${C_CYAN}docker compose logs -f${C_RESET}\n"
