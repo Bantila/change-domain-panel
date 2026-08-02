@@ -75,7 +75,7 @@
   apt-get install -y certbot python3-certbot-dns-cloudflare
   ```
 - Утилиты `dig`, `curl`, `awk`, `sed`, `grep` (обычно уже есть в базовой системе).
-- Root-доступ (`sudo`).
+- Root-доступ (``).
 - Установленная Remnawave-инфраструктура в стандартной структуре каталогов
   eGames-скрипта: `.env`, `docker-compose.yml`, `nginx.conf` в одной директории
   (`/opt/remnawave` для панели/подписки, `/opt/remnanode` для ноды).
@@ -88,13 +88,13 @@
 ### Вариант A — разовый запуск (без установки)
 
 ```bash
-sudo bash <(curl -fsSL https://raw.githubusercontent.com/Gemr007/change-domain-panel/main/change-domain.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/Gemr007/change-domain-panel/main/change-domain.sh)
 ```
 
 С флагами — допиши их после закрывающей скобки:
 
 ```bash
-sudo bash <(curl -fsSL https://raw.githubusercontent.com/Gemr007/change-domain-panel/main/change-domain.sh) \
+bash <(curl -fsSL https://raw.githubusercontent.com/Gemr007/change-domain-panel/main/change-domain.sh) \
   --role panel --old old.domain.com --new new.domain.com \
   --cert-method cloudflare --cf-zone-new new.domain.com \
   --dir /opt/remnawave --dry-run
@@ -105,16 +105,16 @@ sudo bash <(curl -fsSL https://raw.githubusercontent.com/Gemr007/change-domain-p
 Ставится один раз, дальше вызывается из любой директории:
 
 ```bash
-sudo bash <(curl -fsSL https://raw.githubusercontent.com/Gemr007/change-domain-panel/main/change-domain.sh) --install
+bash <(curl -fsSL https://raw.githubusercontent.com/Gemr007/change-domain-panel/main/change-domain.sh) --install
 ```
 
 Это скачает скрипт в `/usr/local/bin/changedomen` и сделает его исполняемым.
 После этого:
 
 ```bash
-sudo changedomen                     # интерактивный режим
-sudo changedomen --role panel ...    # с флагами
-sudo changedomen --help              # справка по флагам
+changedomen                     # интерактивный режим
+changedomen --role panel ...    # с флагами
+changedomen --help              # справка по флагам
 ```
 
 Обновить до последней версии — просто выполни команду установки ещё раз
@@ -132,13 +132,13 @@ chmod +x change-domain.sh
 Если скрипт уже установлен как команда (см. [Вариант B](#вариант-b--установить-как-команду-changedomen-рекомендуется)):
 
 ```bash
-sudo changedomen
+changedomen
 ```
 
 Или разово, без установки:
 
 ```bash
-sudo bash <(curl -fsSL https://raw.githubusercontent.com/Gemr007/change-domain-panel/main/change-domain.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/Gemr007/change-domain-panel/main/change-domain.sh)
 ```
 
 Оба варианта переходят в интерактивный режим, скрипт спросит всё сам:
@@ -196,7 +196,7 @@ Global API Key случайно состоит только из строчны�
 ## Режим 1: Cloudflare DNS-01
 
 ```bash
-sudo ./change-domain.sh \
+ ./change-domain.sh \
   --role panel \
   --old panel.example.com \
   --new new-panel.example.org \
@@ -230,7 +230,7 @@ sudo ./change-domain.sh \
 ## Режим 2: ACME HTTP-01
 
 ```bash
-sudo ./change-domain.sh \
+ ./change-domain.sh \
   --role node \
   --old node.example.com \
   --new new-node.example.org \
@@ -277,7 +277,7 @@ sudo ./change-domain.sh \
 ### Смена домена панели (Cloudflare, есть wildcard-зона)
 
 ```bash
-sudo ./change-domain.sh --role panel \
+ ./change-domain.sh --role panel \
   --old panel.old-domain.ru \
   --new panel.new-domain.com \
   --cf-zone-new new-domain.com \
@@ -292,7 +292,7 @@ sudo ./change-domain.sh --role panel \
 ### Смена домена подписки на ту же зону
 
 ```bash
-sudo ./change-domain.sh --role sub \
+ ./change-domain.sh --role sub \
   --old sub.old-domain.ru \
   --new sub.new-domain.com \
   --cf-zone-new new-domain.com \
@@ -307,7 +307,7 @@ sudo ./change-domain.sh --role sub \
 ### Смена домена ноды через ACME HTTP-01 (нет Cloudflare)
 
 ```bash
-sudo ./change-domain.sh --role node \
+ ./change-domain.sh --role node \
   --old old-node.ru \
   --new new-node.io \
   --cert-method acme \
