@@ -5,14 +5,11 @@
 set -euo pipefail
 
 RAW_URL="https://raw.githubusercontent.com/Gemr007/change-domain-panel/main/change-domain.sh"
-<<<<<<< HEAD
 INSTALL_PATH="/usr/local/bin/changedomain"
 # Раньше команда ставилась как 'changedomen' (опечатка). Оставляем симлинк,
 # чтобы не сломать уже установленные вызовы и cron/алиасы у пользователей.
 LEGACY_INSTALL_PATH="/usr/local/bin/changedomen"
-=======
 INSTALL_PATH="/usr/local/bin/changedomen"
->>>>>>> 528a489ebb3d7be468e8fc9f4d729bada4ee9ea7
 SCRIPT_NAME="$(basename "$0")"
 
 # --- Цвета -----------------------------------------------------------------
@@ -76,7 +73,6 @@ step() { echo -e "\n${C_BMAGENTA}━━━ $* ━━━${C_RESET}"; }
 banner() {
     echo -e "${C_BCYAN}"
     cat <<'EOF'
-<<<<<<< HEAD
    _____ _                          _____                        _       
   / ____| |                        |  __ \                      (_)      
  | |    | |__   __ _ _ __   __ _  ___| |  | | ___  _ __ ___   __ _ _ _ __  
@@ -85,14 +81,6 @@ banner() {
   \_____|_| |_|\__,_|_| |_|\__, |\___|_____/ \___/|_| |_| |_|\__,_|_|_| |_|
                             __/ |                                           
                            |___/                                            
-=======
-   ___ _                        ___                        _
-  / __\ |__   __ _ _ __   __ _ / __\  ___  _ __ ___   ___ | |_
- / /  | '_ \ / _` | '_ \ / _` / /   / _ \| '_ ` _ \ / _ \| __|
-/ /___| | | | (_| | | | | (_| \ \__| (_) | | | | | | (_) | |_
-\____/|_| |_|\__,_|_| |_|\__, |\____/\___/|_| |_| |_|\___/ \__|
-                         |___/
->>>>>>> 528a489ebb3d7be468e8fc9f4d729bada4ee9ea7
 EOF
     echo -e "${C_RESET}${C_DIM}      смена домена панели / подписки / ноды Remnawave${C_RESET}\n"
 }
