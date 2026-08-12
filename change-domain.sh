@@ -46,7 +46,6 @@ CF_ZONE_NEW=""
 CF_ZONE_OLD=""
 ACME_EMAIL=""
 DRY_RUN=false
-<<<<<<< HEAD
 PANEL_URL=""       # https://panel.example.com, без /api
 PANEL_TOKEN=""     # Bearer-токен; если пусто — спросим логин/пароль
 SKIP_PANEL=false   # --no-panel: не трогать Panel API вообще
@@ -61,8 +60,6 @@ PROXY_KIND=""      # nginx | caddy (только для docsrw)
 PANEL_DIR=""
 PROXY_DIR=""
 SUB_DIR=""
-=======
->>>>>>> 528a489ebb3d7be468e8fc9f4d729bada4ee9ea7
 
 log()  { echo -e "${C_BGREEN}[+]${C_RESET} $*"; }
 warn() { echo -e "${C_BYELLOW}[!]${C_RESET} ${C_YELLOW}$*${C_RESET}"; }
@@ -85,7 +82,6 @@ EOF
     echo -e "${C_RESET}${C_DIM}      смена домена панели / подписки / ноды Remnawave${C_RESET}\n"
 }
 
-<<<<<<< HEAD
 need_jq() {
     command -v jq >/dev/null 2>&1 || err "Нужен jq: apt-get install -y jq"
 }
@@ -662,25 +658,17 @@ do_rollback() {
     exit 0
 }
 
-=======
->>>>>>> 528a489ebb3d7be468e8fc9f4d729bada4ee9ea7
 do_install() {
     [[ $EUID -ne 0 ]] && err "Установка требует root (sudo)."
     banner
     log "Скачиваю актуальную версию скрипта в $INSTALL_PATH..."
     curl -fsSL "$RAW_URL" -o "$INSTALL_PATH" || err "Не удалось скачать скрипт с $RAW_URL"
     chmod +x "$INSTALL_PATH"
-<<<<<<< HEAD
     ln -sf "$INSTALL_PATH" "$LEGACY_INSTALL_PATH"
     echo -e "\n${C_BGREEN}${C_BOLD}✔ Установлено!${C_RESET} Теперь можно запускать из любой директории:"
     echo -e "    ${C_CYAN}sudo changedomain${C_RESET}"
     echo -e "    ${C_CYAN}sudo changedomain --role panel --old ... --new ... --dir ... --cert-method cloudflare --cf-zone-new ...${C_RESET}"
     echo -e "${C_DIM}    (старое имя 'changedomen' оставлено симлинком на новое)${C_RESET}"
-=======
-    echo -e "\n${C_BGREEN}${C_BOLD}✔ Установлено!${C_RESET} Теперь можно запускать из любой директории:"
-    echo -e "    ${C_CYAN}sudo changedomen${C_RESET}"
-    echo -e "    ${C_CYAN}sudo changedomen --role panel --old ... --new ... --dir ... --cert-method cloudflare --cf-zone-new ...${C_RESET}"
->>>>>>> 528a489ebb3d7be468e8fc9f4d729bada4ee9ea7
     exit 0
 }
 
@@ -697,7 +685,6 @@ usage() {
     echo "    $SCRIPT_NAME --role panel|sub|node --old OLD_DOMAIN --new NEW_DOMAIN --dir TARGET_DIR \\"
     echo "       --cert-method acme --acme-email EMAIL [--dry-run]"
     echo ""
-<<<<<<< HEAD
     echo "  Caddy-вариант того же установщика (сертификат Caddy выпускает сам, --cert-method не нужен):"
     echo "    $SCRIPT_NAME --proxy caddy --role panel --old OLD --new NEW --dir /opt/remnawave"
     echo "    $SCRIPT_NAME --proxy caddy --role sub   --old OLD --new NEW --dir /opt/remnawave"
@@ -745,12 +732,6 @@ usage() {
     echo ""
     echo "  --install      Установить этот скрипт как глобальную команду 'changedomain' в /usr/local/bin"
     echo "                 (старое имя 'changedomen' остаётся симлинком)."
-=======
-    echo "  --cf-zone-new  Имя зоны в Cloudflare для НОВОГО домена (то, что видно в дашборде Cloudflare,"
-    echo "                 например example.co.uk — НЕ обязательно последние 2 сегмента домена)."
-    echo ""
-    echo "  --install      Установить этот скрипт как глобальную команду 'changedomen' в /usr/local/bin."
->>>>>>> 528a489ebb3d7be468e8fc9f4d729bada4ee9ea7
     echo ""
     echo "Или запусти без аргументов — скрипт спросит всё интерактивно."
     exit 1
@@ -768,7 +749,6 @@ while [[ $# -gt 0 ]]; do
         --cf-zone-old) CF_ZONE_OLD="$2"; shift 2 ;;
         --cert-method) CERT_METHOD="$2"; shift 2 ;;
         --acme-email) ACME_EMAIL="$2"; shift 2 ;;
-<<<<<<< HEAD
         --panel-url) PANEL_URL="$2"; shift 2 ;;
         --panel-token) PANEL_TOKEN="$2"; shift 2 ;;
         --no-panel) SKIP_PANEL=true; shift ;;
@@ -779,8 +759,6 @@ while [[ $# -gt 0 ]]; do
         --proxy-dir) PROXY_DIR="$2"; shift 2 ;;
         --sub-dir) SUB_DIR="$2"; shift 2 ;;
         --rollback) ROLLBACK_DIR="$2"; shift 2 ;;
-=======
->>>>>>> 528a489ebb3d7be468e8fc9f4d729bada4ee9ea7
         --dry-run) DRY_RUN=true; shift ;;
         --install) do_install ;;
         -h|--help) usage ;;
@@ -790,7 +768,6 @@ done
 
 [[ $EUID -ne 0 ]] && { echo -e "\033[1;31m[x]\033[0m Run as root (sudo)."; exit 1; }
 
-<<<<<<< HEAD
 [[ -n "$ROLLBACK_DIR" ]] && do_rollback
 
 [[ -n "$ROLE" ]] && banner
@@ -801,12 +778,6 @@ done
 # Мастер описывает только макет egamesapi (единый каталог + certbot); для docsrw
 # каталогов и подвариантов слишком много, там роль задаётся флагом.
 if [[ -z "$ROLE" && "$LAYOUT" == "egamesapi" ]]; then
-=======
-[[ -n "$ROLE" ]] && banner
-
-# --- Интерактивный опрос, если роль/домены не переданы флагами -----------
-if [[ -z "$ROLE" ]]; then
->>>>>>> 528a489ebb3d7be468e8fc9f4d729bada4ee9ea7
     banner
     step "Шаг 1/4 — где выполняется скрипт"
     echo -e "  ${C_BOLD}1${C_RESET}) Нода ${C_DIM}(Reality/selfsteal — SELF_STEAL_DOMAIN, обычно /opt/remnanode)${C_RESET}"
@@ -844,7 +815,6 @@ if [[ -z "$ROLE" ]]; then
     read -rp "$(echo -e "${C_CYAN}Старый домен (который меняем):${C_RESET} ")" OLD_DOMAIN
     read -rp "$(echo -e "${C_CYAN}Новый домен:${C_RESET} ")" NEW_DOMAIN
 
-<<<<<<< HEAD
     egamesapi_detect_proxy
 
     if [[ "$PROXY_KIND" == "caddy" ]]; then
@@ -852,8 +822,6 @@ if [[ -z "$ROLE" ]]; then
         info "Caddy получает сертификаты сам, шаг выбора метода сертификата пропущен."
     else
 
-=======
->>>>>>> 528a489ebb3d7be468e8fc9f4d729bada4ee9ea7
     step "Шаг 3/4 — метод сертификата"
     echo -e "  ${C_BOLD}1${C_RESET}) Cloudflare DNS-01 ${C_DIM}(нужен API-токен, поддерживает wildcard)${C_RESET}"
     echo -e "  ${C_BOLD}2${C_RESET}) ACME HTTP-01 ${C_DIM}(без токена, БЕЗ wildcard, нужен свободный порт 80${C_RESET}"
@@ -880,11 +848,8 @@ if [[ -z "$ROLE" ]]; then
         *) err "Некорректный выбор." ;;
     esac
 
-<<<<<<< HEAD
     fi  # конец ветки "не caddy" в опросе метода сертификата
 
-=======
->>>>>>> 528a489ebb3d7be468e8fc9f4d729bada4ee9ea7
     if [[ "$ROLE" == "both" ]]; then
         step "Шаг 4/4 — подтверждение"
         warn "Для варианта 'оба' скрипт применит одну и ту же замену старый->новый"
@@ -896,7 +861,6 @@ if [[ -z "$ROLE" ]]; then
     fi
 fi
 
-<<<<<<< HEAD
 if [[ "$LAYOUT" == "docsrw" ]]; then
     [[ -z "$ROLE" ]] && err "Для --layout docsrw роль задаётся явно: --role panel|sub|node (см. --help)."
     [[ -z "$OLD_DOMAIN" || -z "$NEW_DOMAIN" ]] && usage
@@ -951,24 +915,6 @@ else
     echo -e "${C_DIM}${OLD_DOMAIN} → ${C_RESET}${C_WHITE}${NEW_DOMAIN}${C_RESET}  ${C_DIM}[${ROLE} / ${CERT_METHOD}]${C_RESET}\n"
 fi
 
-=======
-[[ -z "$OLD_DOMAIN" || -z "$NEW_DOMAIN" || -z "$TARGET_DIR" ]] && usage
-[[ "$ROLE" != "panel" && "$ROLE" != "sub" && "$ROLE" != "node" && "$ROLE" != "panel_and_sub" ]] && err "role must be panel|sub|node"
-[[ ! -d "$TARGET_DIR" ]] && err "Directory $TARGET_DIR not found."
-[[ "$CERT_METHOD" != "cloudflare" && "$CERT_METHOD" != "acme" ]] && err "Укажи --cert-method cloudflare или acme."
-
-if [[ "$CERT_METHOD" == "cloudflare" ]]; then
-    [[ -z "$CF_ZONE_NEW" ]] && err "Не указана зона Cloudflare для нового домена (--cf-zone-new)."
-    if [[ "$NEW_DOMAIN" != "$CF_ZONE_NEW" && "$NEW_DOMAIN" != *".$CF_ZONE_NEW" ]]; then
-        err "$NEW_DOMAIN не является поддоменом зоны $CF_ZONE_NEW."
-    fi
-else
-    [[ -z "$ACME_EMAIL" ]] && err "Для --cert-method acme нужен --acme-email."
-fi
-
-echo -e "${C_DIM}${OLD_DOMAIN} → ${C_RESET}${C_WHITE}${NEW_DOMAIN}${C_RESET}  ${C_DIM}[${ROLE} / ${CERT_METHOD}]${C_RESET}\n"
-
->>>>>>> 528a489ebb3d7be468e8fc9f4d729bada4ee9ea7
 step "Шаг 1/3 — проверка DNS и выпуск сертификата"
 log "Проверяю DNS для $NEW_DOMAIN..."
 DOMAIN_IP=$(dig +short A "$NEW_DOMAIN" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -n1 || true)
@@ -992,7 +938,6 @@ else
 fi
 
 # --- Выпуск сертификата ------------------------------------------------
-<<<<<<< HEAD
 if [[ "$LAYOUT" == "docsrw" ]]; then
 
 docsrw_issue_cert
@@ -1007,9 +952,6 @@ info "Caddy сам получит новый сертификат для $NEW_DO
 else
 
 if ! $DRY_RUN && ! command -v certbot >/dev/null 2>&1; then
-=======
-if ! command -v certbot >/dev/null 2>&1; then
->>>>>>> 528a489ebb3d7be468e8fc9f4d729bada4ee9ea7
     err "certbot не установлен. Установи: apt-get install -y certbot python3-certbot-dns-cloudflare"
 fi
 
@@ -1102,7 +1044,6 @@ else
     fi
 fi
 
-<<<<<<< HEAD
 fi  # конец ветки LAYOUT=egamesapi для выпуска сертификата
 
 # --- Опциональное обновление A-записи тем же Cloudflare-токеном ---------
@@ -1116,8 +1057,6 @@ if $CF_UPDATE_DNS; then
     fi
 fi
 
-=======
->>>>>>> 528a489ebb3d7be468e8fc9f4d729bada4ee9ea7
 # --- Бэкап и замена домена в конфигах ---------------------------------
 step "Шаг 2/3 — бэкап и подготовка изменений"
 TS=$(date +%Y%m%d-%H%M%S)
@@ -1125,7 +1064,6 @@ BACKUP_DIR="${TARGET_DIR}/domain-change-backup-${TS}"
 mkdir -p "$BACKUP_DIR"
 
 FILES_TO_PATCH=()
-<<<<<<< HEAD
 if [[ "$LAYOUT" == "docsrw" ]]; then
     while read -r f; do
         [[ -f "$f" ]] && FILES_TO_PATCH+=("$f")
@@ -1151,31 +1089,19 @@ if [[ ${#FILES_TO_PATCH[@]} -eq 0 ]] && ! $DOCSRW_NODE_BEST_EFFORT; then
     if [[ "$LAYOUT" == "docsrw" ]]; then
         err "Не нашёл ни одного конфигурационного файла в $PANEL_DIR / $PROXY_DIR — проверь --panel-dir/--proxy-dir."
     fi
-=======
-for f in "$TARGET_DIR/.env" "$TARGET_DIR/docker-compose.yml" "$TARGET_DIR/nginx/nginx.conf" "$TARGET_DIR/nginx.conf"; do
-    [[ -f "$f" ]] && FILES_TO_PATCH+=("$f")
-done
-
-if [[ ${#FILES_TO_PATCH[@]} -eq 0 ]]; then
->>>>>>> 528a489ebb3d7be468e8fc9f4d729bada4ee9ea7
     err "Не нашёл ни .env, ни docker-compose.yml, ни nginx.conf в $TARGET_DIR — проверь путь."
 fi
 
 log "Файлы, где встречается $OLD_DOMAIN:"
 MATCHED_FILES=()
-<<<<<<< HEAD
 for f in "${FILES_TO_PATCH[@]:-}"; do
     [[ -n "$f" ]] || continue
-=======
-for f in "${FILES_TO_PATCH[@]}"; do
->>>>>>> 528a489ebb3d7be468e8fc9f4d729bada4ee9ea7
     if grep -q "$OLD_DOMAIN" "$f"; then
         echo -e "   ${C_CYAN}-${C_RESET} $f"
         MATCHED_FILES+=("$f")
     fi
 done
 
-<<<<<<< HEAD
 SKIP_LOCAL=false
 if [[ ${#MATCHED_FILES[@]} -eq 0 ]]; then
     if $DOCSRW_NODE_BEST_EFFORT; then
@@ -1205,15 +1131,6 @@ for f in "${MATCHED_FILES[@]}"; do
     fi
     cp "$f" "$BACKUP_DIR/$stored"
     printf '%s\t%s\n' "$stored" "$f" >> "$BACKUP_DIR/manifest"
-=======
-if [[ ${#MATCHED_FILES[@]} -eq 0 ]]; then
-    warn "Строка $OLD_DOMAIN не найдена ни в одном файле. Проверь, что домен указан правильно (без https://, с/без www)."
-    exit 1
-fi
-
-for f in "${MATCHED_FILES[@]}"; do
-    cp "$f" "$BACKUP_DIR/$(basename "$f").bak"
->>>>>>> 528a489ebb3d7be468e8fc9f4d729bada4ee9ea7
 done
 log "Бэкап сохранён в $BACKUP_DIR"
 
@@ -1224,7 +1141,6 @@ for f in "${MATCHED_FILES[@]}"; do
         || true
 done
 
-<<<<<<< HEAD
 fi  # конец блока подготовки локальных изменений (SKIP_LOCAL)
 
 if $DRY_RUN; then
@@ -1237,18 +1153,12 @@ if $DRY_RUN; then
         log "[dry-run] would PATCH ${PANEL_URL%/}/api/config-profiles — serverNames/host: $OLD_DOMAIN -> $NEW_DOMAIN"
         log "[dry-run] would PATCH ${PANEL_URL%/}/api/hosts — address/sni/host: $OLD_DOMAIN -> $NEW_DOMAIN"
     fi
-=======
-if $DRY_RUN; then
->>>>>>> 528a489ebb3d7be468e8fc9f4d729bada4ee9ea7
     log "[dry-run] Изменения не применены."
     exit 0
 fi
 
-<<<<<<< HEAD
 if ! $SKIP_LOCAL; then
 
-=======
->>>>>>> 528a489ebb3d7be468e8fc9f4d729bada4ee9ea7
 echo ""
 read -rp "$(echo -e "${C_BYELLOW}Применить эти изменения? (y/N):${C_RESET} ")" confirm
 [[ "$confirm" != "y" && "$confirm" != "Y" ]] && { warn "Отменено."; exit 1; }
@@ -1258,26 +1168,18 @@ for f in "${MATCHED_FILES[@]}"; do
 done
 log "Домен заменён в: ${MATCHED_FILES[*]}"
 
-<<<<<<< HEAD
 fi  # конец блока применения локальных изменений (SKIP_LOCAL)
 
-=======
->>>>>>> 528a489ebb3d7be468e8fc9f4d729bada4ee9ea7
 # --- Если docker-compose.yml монтирует сертификаты по старому домену (base или
 #        сам OLD_DOMAIN, в зависимости от того как ставился сертификат) — подставим
 #        пути на новый сертификат. Ищем ЛЮБУЮ строку /etc/letsencrypt/live/<что-то>,
 #        где <что-то> является префиксом OLD_DOMAIN (т.е. OLD_DOMAIN совпадает с ним
 #        или является его поддоменом) — без угадывания по количеству точек.
-<<<<<<< HEAD
 # Только для egamesapi+nginx: в docs.rw сертификаты кладёт acme.sh по фиксированным
 # путям внутри proxy-каталога, а у любого Caddy они вообще внутри named volume,
 # так что /etc/letsencrypt/live там не встречается никогда.
 COMPOSE_FILE="$TARGET_DIR/docker-compose.yml"
 if [[ "$LAYOUT" == "egamesapi" && "$PROXY_KIND" != "caddy" && -f "$COMPOSE_FILE" ]]; then
-=======
-COMPOSE_FILE="$TARGET_DIR/docker-compose.yml"
-if [[ -f "$COMPOSE_FILE" ]]; then
->>>>>>> 528a489ebb3d7be468e8fc9f4d729bada4ee9ea7
     OLD_CERT_DIRS=$(grep -oE "/etc/letsencrypt/live/[A-Za-z0-9.*-]+" "$COMPOSE_FILE" | sed 's#/etc/letsencrypt/live/##' | sort -u)
     for cand in $OLD_CERT_DIRS; do
         if [[ "$OLD_DOMAIN" == "$cand" || "$OLD_DOMAIN" == *".$cand" ]]; then
@@ -1290,7 +1192,6 @@ fi
 
 # --- Перезапуск ---------------------------------------------------------
 step "Шаг 3/3 — перезапуск контейнеров"
-<<<<<<< HEAD
 if [[ "$LAYOUT" == "docsrw" ]]; then
     docsrw_restart
 else
@@ -1322,32 +1223,3 @@ verify_deployment
 echo -e "\n${C_BGREEN}${C_BOLD}✔ Готово!${C_RESET} ${C_WHITE}${NEW_DOMAIN}${C_RESET} настроен."
 echo -e "${C_DIM}Логи:${C_RESET} ${C_CYAN}docker compose -f $TARGET_DIR/docker-compose.yml logs -f${C_RESET}"
 echo -e "${C_DIM}Откат:${C_RESET} ${C_CYAN}$SCRIPT_NAME --rollback $BACKUP_DIR${C_RESET}\n"
-=======
-cd "$TARGET_DIR"
-case "$ROLE" in
-    panel)
-        log "Перезапускаю remnawave-nginx и remnawave..."
-        docker compose down remnawave-nginx remnawave 2>/dev/null || docker compose down
-        docker compose up -d
-        ;;
-    sub)
-        log "Перезапускаю remnawave-nginx и remnawave-subscription-page..."
-        docker compose down remnawave-nginx remnawave-subscription-page 2>/dev/null || docker compose down
-        docker compose up -d
-        ;;
-    panel_and_sub)
-        log "Перезапускаю все контейнеры compose-проекта (панель + подписка на одном сервере)..."
-        docker compose down
-        docker compose up -d
-        ;;
-    node)
-        log "Перезапускаю ноду (remnanode) и её nginx/caddy..."
-        docker compose down
-        docker compose up -d
-        warn "Не забудь: SELF_STEAL_DOMAIN/serverNames в Config Profile панели меняются ОТДЕЛЬНО, через панель, не этим скриптом."
-        ;;
-esac
-
-echo -e "\n${C_BGREEN}${C_BOLD}✔ Готово!${C_RESET} ${C_WHITE}${NEW_DOMAIN}${C_RESET} настроен."
-echo -e "${C_DIM}Проверь:${C_RESET} ${C_CYAN}curl -Iv https://$NEW_DOMAIN${C_RESET}  ${C_DIM}и${C_RESET}  ${C_CYAN}docker compose logs -f${C_RESET}\n"
->>>>>>> 528a489ebb3d7be468e8fc9f4d729bada4ee9ea7
