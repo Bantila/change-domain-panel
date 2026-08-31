@@ -47,7 +47,8 @@ CF_ZONE_OLD=""
 ACME_EMAIL=""
 DRY_RUN=false
 PANEL_URL=""       # https://panel.example.com, без /api
-PANEL_TOKEN=""     # Bearer-токен; если пусто — спросим логин/пароль
+PANEL_TOKEN=""     # API-ключ панели (Настройки -> API Tokens)
+PANEL_COOKIE=""    # секретная cookie eGamesAPI вида ИМЯ=ЗНАЧЕНИЕ
 SKIP_PANEL=false   # --no-panel: не трогать Panel API вообще
 CF_UPDATE_DNS=false
 ROLLBACK_DIR=""
@@ -214,22 +215,90 @@ panel_api() {
                 -H "Content-Type: application/json"
                 -H "X-Remnawave-Client-Type: browser")
     [[ -n "$PANEL_TOKEN" ]] && args+=(-H "Authorization: Bearer $PANEL_TOKEN")
+    [[ -n "$PANEL_COOKIE" ]] && args+=(-H "Cookie: $PANEL_COOKIE")
     [[ -n "$data" ]] && args+=(-d "$data")
     curl "${args[@]}" || true
 }
 
-panel_login() {
-    [[ -n "$PANEL_TOKEN" ]] && return 0
-    local u p resp
-    read -rp "$(echo -e "${C_CYAN}Логин панели:${C_RESET} ")" u
-    read -rsp "$(echo -e "${C_CYAN}Пароль панели:${C_RESET} ")" p; echo
-    resp=$(panel_api POST /api/auth/login "$(jq -n --arg u "$u" --arg p "$p" '{username:$u,password:$p}')")
-    PANEL_TOKEN=$(echo "$resp" | jq -r '.response.accessToken // empty' 2>/dev/null || true)
+# eGamesAPI прячет панель за секретной cookie: в его nginx.conf `location /`
+# отдаёт 444, а в Caddyfile блок @unauthorized делает abort — на ЛЮБОЙ запрос без
+# неё, включая /api. Наружу это выглядит не как 401, а как пустой ответ curl.
+# Пара ИМЯ=ЗНАЧЕНИЕ лежит в самом конфиге прокси, поэтому на сервере панели её
+# можно достать оттуда, а не спрашивать у человека.
+panel_cookie_files() {
+    echo "$TARGET_DIR/nginx.conf"
+    echo "$TARGET_DIR/nginx/nginx.conf"
+    echo "$TARGET_DIR/Caddyfile"
+    if [[ -n "$PROXY_DIR" ]]; then
+        echo "$PROXY_DIR/nginx.conf"
+        echo "$PROXY_DIR/Caddyfile"
+    fi
+}
+
+resolve_panel_cookie() {
+    [[ -n "$PANEL_COOKIE" ]] && return 0
+
+    # Ссылку вида https://panel.example.com/auth/login?abc=def установщик печатает
+    # в конце установки — её можно вставить в --panel-url как есть.
+    if [[ "$PANEL_URL" == *"?"* ]]; then
+        PANEL_COOKIE="${PANEL_URL#*\?}"
+        PANEL_URL="${PANEL_URL%%\?*}"
+        PANEL_URL="${PANEL_URL%/auth/login}"
+        log "Cookie авторизации взята из --panel-url, URL панели: $PANEL_URL"
+        return 0
+    fi
+
+    local f pair
+    while read -r f; do
+        [[ -f "$f" ]] || continue
+        # nginx:  map $http_cookie $auth_cookie { "~*ИМЯ=ЗНАЧЕНИЕ" 1; }
+        pair=$(grep -oE '"~\*[A-Za-z0-9_]+=[A-Za-z0-9_]+"' "$f" | head -n1 | tr -d '"' | sed 's/^~\*//' || true)
+        # caddy:  header +Set-Cookie "ИМЯ=ЗНАЧЕНИЕ; Path=/; ..."
+        [[ -z "$pair" ]] && pair=$(grep -oE 'Set-Cookie "[A-Za-z0-9_]+=[A-Za-z0-9_]+' "$f" | head -n1 | sed 's/^Set-Cookie "//' || true)
+        if [[ -n "$pair" ]]; then
+            PANEL_COOKIE="$pair"
+            log "Секретная cookie панели найдена в $f."
+            return 0
+        fi
+    done < <(panel_cookie_files)
+    return 1
+}
+
+# Авторизация только по API-ключу панели (в панели: Настройки -> API Tokens).
+# Логин/пароль не используем: у суперадмина обычно включён 2FA, и /api/auth/login
+# в этом случае возвращает не токен, а запрос кода — интерактива для этого здесь нет.
+# API-ключ шлётся тем же заголовком Authorization: Bearer, что и сессионный токен.
+panel_auth() {
     if [[ -z "$PANEL_TOKEN" ]]; then
-        warn "Не удалось получить токен панели: ${resp:-<пустой ответ>}"
+        if [[ ! -t 0 ]]; then
+            warn "Нет --panel-token и нет терминала, чтобы спросить API-ключ панели."
+            return 1
+        fi
+        read -rsp "$(echo -e "${C_CYAN}API-ключ панели (Настройки -> API Tokens):${C_RESET} ")" PANEL_TOKEN; echo
+    fi
+    [[ -z "$PANEL_TOKEN" ]] && { warn "API-ключ панели не задан."; return 1; }
+
+    resolve_panel_cookie || true
+
+    # Один дешёвый GET, чтобы неверный ключ падал с понятным сообщением здесь,
+    # а не выглядел как «панель сломалась» на первом же PATCH.
+    local resp
+    resp=$(panel_api GET /api/config-profiles)
+    if [[ -z "$resp" ]]; then
+        warn "Панель ${PANEL_URL%/} не ответила вообще (пустой ответ)."
+        warn "Так ведёт себя защита eGamesAPI: без секретной cookie nginx отдаёт 444, а Caddy — abort,"
+        warn "и это касается всех путей, включая /api."
+        warn "Передай её флагом --panel-cookie ИМЯ=ЗНАЧЕНИЕ, либо вставь в --panel-url ссылку целиком:"
+        warn "  --panel-url 'https://panel.example.com/auth/login?ИМЯ=ЗНАЧЕНИЕ'"
+        warn "Пара лежит на сервере панели: nginx.conf (map \$http_cookie) или Caddyfile (header +Set-Cookie)."
         return 1
     fi
-    log "Токен панели получен."
+    if ! echo "$resp" | jq -e '.response' >/dev/null 2>&1; then
+        warn "Панель ${PANEL_URL%/} не приняла API-ключ: $resp"
+        warn "Проверь: ключ не отозван, --panel-url указан без /api, ключ создан в Настройки -> API Tokens."
+        return 1
+    fi
+    log "API-ключ принят."
     return 0
 }
 
@@ -256,6 +325,12 @@ panel_patch_config_profiles() {
         fi
 
         new=$(echo "$config" | jq -c --arg old "$OLD_DOMAIN" --arg new "$NEW_DOMAIN" '
+            # dest/target у Reality — это "домен:порт" либо голый домен, поэтому
+            # порт надо сохранить, а не затереть заменой строки целиком.
+            def fixdest:
+                if . == $old then $new
+                elif startswith($old + ":") then $new + .[($old | length):]
+                else . end;
             walk(
                 if type == "object" then
                       (if (.serverNames? | type) == "array"
@@ -263,6 +338,8 @@ panel_patch_config_profiles() {
                           else . end)
                     | (if (.host? // "") == $old then .host = $new else . end)
                     | (if (.serverName? // "") == $old then .serverName = $new else . end)
+                    | (if (.dest? | type) == "string" then .dest |= fixdest else . end)
+                    | (if (.target? | type) == "string" then .target |= fixdest else . end)
                 else . end
             )')
 
@@ -319,13 +396,43 @@ panel_patch_hosts() {
     return 0
 }
 
+# Адрес самой ноды в панели (Nodes -> address). Часто там IP, а не домен —
+# тогда менять нечего, поэтому фильтруем по точному совпадению, как и в Hosts.
+panel_patch_nodes() {
+    local node resp changed=0 list
+    list=$(panel_api GET /api/nodes)
+    if ! echo "$list" | jq -e '.response' >/dev/null 2>&1; then
+        warn "Не удалось получить список нод: ${list:-<пустой ответ>}"
+        return 1
+    fi
+
+    while read -r node; do
+        [[ -z "$node" ]] && continue
+        resp=$(panel_api PATCH /api/nodes \
+            "$(echo "$node" | jq -c --arg new "$NEW_DOMAIN" '{uuid: .uuid, address: $new}')")
+        if echo "$resp" | jq -e '.response.uuid' >/dev/null 2>&1; then
+            log "Нода $(echo "$node" | jq -r '.name // .uuid') переведена на $NEW_DOMAIN."
+            changed=$((changed + 1))
+        else
+            warn "Не удалось обновить ноду $(echo "$node" | jq -r '.uuid'): ${resp:-<пустой ответ>}"
+            return 1
+        fi
+    done < <(echo "$list" | jq -c --arg old "$OLD_DOMAIN" '.response[]? | select(.address == $old)')
+
+    if [[ $changed -eq 0 ]]; then
+        info "В адресах нод домен $OLD_DOMAIN не встретился — менять нечего."
+    fi
+    return 0
+}
+
 sync_panel() {
     step "Обновление домена в панели Remnawave ($PANEL_URL)"
     need_jq
-    panel_login || return 1
+    panel_auth || return 1
     local rc=0
     panel_patch_config_profiles || rc=1
     panel_patch_hosts || rc=1
+    panel_patch_nodes || rc=1
     return $rc
 }
 
@@ -724,7 +831,12 @@ usage() {
     echo ""
     echo "  --panel-url    URL панели Remnawave без /api (например https://panel.example.com). Для --role node"
     echo "                 нужен, чтобы поменять домен ещё и в Config Profile / Hosts панели, а не только в файлах."
-    echo "  --panel-token  Bearer-токен панели. Если не передан — скрипт спросит логин/пароль."
+    echo "  --panel-token  API-ключ панели (Настройки -> API Tokens). Если не передан — скрипт спросит его"
+    echo "                 интерактивно, со скрытым вводом. Логин/пароль панели не используются."
+    echo "  --panel-cookie Секретная cookie панели в установке eGamesAPI, в виде ИМЯ=ЗНАЧЕНИЕ. Без неё nginx"
+    echo "                 отдаёт 444, а Caddy обрывает соединение на любом запросе, включая /api. На сервере"
+    echo "                 панели ищется автоматически в nginx.conf/Caddyfile; на ноде — передай флагом или"
+    echo "                 вставь в --panel-url ссылку вида https://panel.example.com/auth/login?ИМЯ=ЗНАЧЕНИЕ."
     echo "  --no-panel     Не трогать Panel API вообще (только файлы на диске, как в старом поведении)."
     echo ""
     echo "  --cf-update-dns  Дополнительно обновить A-запись нового домена в Cloudflare тем же токеном,"
@@ -751,6 +863,7 @@ while [[ $# -gt 0 ]]; do
         --acme-email) ACME_EMAIL="$2"; shift 2 ;;
         --panel-url) PANEL_URL="$2"; shift 2 ;;
         --panel-token) PANEL_TOKEN="$2"; shift 2 ;;
+        --panel-cookie) PANEL_COOKIE="$2"; shift 2 ;;
         --no-panel) SKIP_PANEL=true; shift ;;
         --cf-update-dns) CF_UPDATE_DNS=true; shift ;;
         --layout) LAYOUT="$2"; shift 2 ;;
@@ -892,14 +1005,16 @@ else
     fi
 fi
 
-# Для ноды домен живёт ещё и в панели (Config Profile serverNames + Hosts).
-# Спрашиваем только для role=node: для panel/sub панель стоит на этом же сервере
-# и её собственный домен в Xray-конфиге не фигурирует.
-if [[ "$ROLE" == "node" && "$SKIP_PANEL" == false && -z "$PANEL_URL" ]]; then
+# Домен живёт не только в файлах на диске, но и в базе панели, причём где именно —
+# зависит от установки, а не от роли. Поэтому спрашиваем всегда, а что реально
+# зацепится, решают сами запросы: чего нет — то и не меняется.
+# [[ -t 0 ]] обязателен: без терминала read упирается в EOF и под set -e роняет скрипт.
+if [[ "$SKIP_PANEL" == false && -z "$PANEL_URL" && -t 0 ]]; then
     step "Смена домена в панели"
-    warn "Домен ноды хранится не только в файлах на диске, но и в панели:"
-    warn "  Config Profile -> realitySettings.serverNames / xhttpSettings.host"
+    warn "Домен хранится не только в файлах на диске, но и в панели:"
+    warn "  Config Profile -> realitySettings.serverNames / dest, xhttpSettings.host"
     warn "  Hosts -> address / sni / host"
+    warn "  Nodes -> address"
     read -rp "$(echo -e "${C_CYAN}Поменять домен в панели тоже? (y/N):${C_RESET} ")" c
     if [[ "$c" == "y" || "$c" == "Y" ]]; then
         read -rp "$(echo -e "${C_CYAN}URL панели без /api (например https://panel.example.com):${C_RESET} ")" PANEL_URL
@@ -1149,9 +1264,10 @@ if $DRY_RUN; then
             log "[dry-run] would restart compose project in $d"
         done < <(docsrw_restart_dirs)
     fi
-    if [[ "$ROLE" == "node" && "$SKIP_PANEL" == false && -n "$PANEL_URL" ]]; then
-        log "[dry-run] would PATCH ${PANEL_URL%/}/api/config-profiles — serverNames/host: $OLD_DOMAIN -> $NEW_DOMAIN"
+    if [[ "$SKIP_PANEL" == false && -n "$PANEL_URL" ]]; then
+        log "[dry-run] would PATCH ${PANEL_URL%/}/api/config-profiles — serverNames/dest/host: $OLD_DOMAIN -> $NEW_DOMAIN"
         log "[dry-run] would PATCH ${PANEL_URL%/}/api/hosts — address/sni/host: $OLD_DOMAIN -> $NEW_DOMAIN"
+        log "[dry-run] would PATCH ${PANEL_URL%/}/api/nodes — address: $OLD_DOMAIN -> $NEW_DOMAIN"
     fi
     log "[dry-run] Изменения не применены."
     exit 0
@@ -1204,16 +1320,24 @@ fi
 # ноде. Если сначала пропатчить панель, нода какое-то время будет отдавать новые
 # serverNames старым сертификатом. Поэтому сперва поднимаем ноду на новом домене,
 # и только потом панель начинает раздавать этот домен клиентам в подписках.
-if [[ "$ROLE" == "node" ]]; then
-    if [[ "$SKIP_PANEL" == true || -z "$PANEL_URL" ]]; then
+if [[ "$SKIP_PANEL" == true || -z "$PANEL_URL" ]]; then
+    if [[ "$ROLE" == "node" ]]; then
         warn "Не забудь: SELF_STEAL_DOMAIN/serverNames в Config Profile панели меняются ОТДЕЛЬНО, через панель, не этим скриптом."
         warn "Автоматически это делается флагом --panel-url (или ответом 'y' на вопрос про панель)."
-    elif sync_panel; then
+    fi
+else
+    # Если меняли домен самой панели, она уже перезапущена на новом имени, и старый
+    # адрес больше не отвечает — в API идём по новому.
+    if [[ "$PANEL_URL" == *"$OLD_DOMAIN"* ]]; then
+        PANEL_URL="${PANEL_URL//$OLD_DOMAIN/$NEW_DOMAIN}"
+        info "URL панели переключён на новый домен: $PANEL_URL"
+    fi
+    if sync_panel; then
         log "Домен обновлён и в панели."
     else
         warn "Часть про панель НЕ выполнена — см. сообщения выше."
         warn "Локальные изменения файлов и рестарт контейнеров уже применены и НЕ откатывались."
-        warn "Поправь вручную: Config Profile -> realitySettings.serverNames, Hosts -> address/sni."
+        warn "Поправь вручную: Config Profile -> realitySettings.serverNames/dest, Hosts -> address/sni, Nodes -> address."
         warn "Откатить файлы целиком: $SCRIPT_NAME --rollback $BACKUP_DIR"
     fi
 fi
