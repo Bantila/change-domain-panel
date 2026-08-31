@@ -9,7 +9,6 @@ INSTALL_PATH="/usr/local/bin/changedomain"
 # Раньше команда ставилась как 'changedomen' (опечатка). Оставляем симлинк,
 # чтобы не сломать уже установленные вызовы и cron/алиасы у пользователей.
 LEGACY_INSTALL_PATH="/usr/local/bin/changedomen"
-INSTALL_PATH="/usr/local/bin/changedomen"
 SCRIPT_NAME="$(basename "$0")"
 
 # --- Цвета -----------------------------------------------------------------
