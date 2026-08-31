@@ -174,35 +174,188 @@ file_will_change() {
     ! sed "${PATCH_EXPR[@]}" "$1" | cmp -s - "$1"
 }
 
+# --- Compose: что реально объявлено в проекте --------------------------------
+compose_services() {
+    (cd "${1:-$TARGET_DIR}" && docker compose config --services 2>/dev/null) || true
+}
+
+# Имена сервисов зашиты по установщику eGamesAPI. В кастомном docker-compose.yml
+# они другие, и точечный `docker compose down <svc>` тогда молча не делает
+# ничего — поэтому сверяемся с реальным списком, а не верим именам на слово.
+have_service() {
+    compose_services "${2:-$TARGET_DIR}" | grep -qx -- "$1"
+}
+
+container_id() {
+    local svc="$1" cid=""
+    if [[ "$LAYOUT" != "docsrw" && -f "$TARGET_DIR/docker-compose.yml" ]]; then
+        cid=$( (cd "$TARGET_DIR" && docker compose ps -aq "$svc" 2>/dev/null || true) | head -n1)
+    fi
+    if [[ -z "$cid" ]]; then
+        cid=$(docker ps -a --filter "name=^/?${svc}$" --format '{{.ID}}' 2>/dev/null | head -n1 || true)
+    fi
+    printf '%s' "$cid"
+}
+
+# Порты reverse-proxy берём из его конфига, а не хардкодим 8443: у разных
+# установок decoy слушает разное.
+proxy_listen_ports() {
+    local conf
+    for conf in "$TARGET_DIR/nginx.conf" "$TARGET_DIR/nginx/nginx.conf"; do
+        [[ -f "$conf" ]] || continue
+        grep -oE '^[[:space:]]*listen[[:space:]]+[0-9]+' "$conf" | grep -oE '[0-9]+' || true
+    done | sort -un
+}
+
+# Активное ожидание вместо sleep N: фиксированная пауза либо тратится зря, либо
+# не спасает. Ждём, пока порт реально появится в слушающих.
+wait_for_ports() {
+    (( $# )) || return 0
+    if ! command -v ss >/dev/null 2>&1; then
+        warn "Нет ss (iproute2) — не могу дождаться портов reverse-proxy, продолжаю без ожидания."
+        return 0
+    fi
+    local port i
+    for port in "$@"; do
+        for ((i = 0; i < 30; i++)); do
+            ss -tln 2>/dev/null | grep -qE "[:.]${port}[[:space:]]" && break
+            sleep 1
+        done
+        if ss -tln 2>/dev/null | grep -qE "[:.]${port}[[:space:]]"; then
+            log "Порт $port занят reverse-proxy."
+        else
+            warn "Порт $port не появился за 30с — смотри логи reverse-proxy."
+        fi
+    done
+}
+
+# --- Проверка nginx.conf ДО боевого перезапуска ------------------------------
+# Замена домена — это sed по строке, так что синтаксически битый конфиг в
+# принципе возможен. Гоняем nginx -t в одноразовом контейнере с тем же образом,
+# что и в проекте, чтобы узнать об этом до, а не из логов упавшего контейнера.
+proxy_image() {
+    (cd "${1:-$TARGET_DIR}" && docker compose config --images 2>/dev/null | grep -iE 'nginx' | head -n1) || true
+}
+
+validate_nginx_conf() {
+    local dir="$1" conf="$2" image out rc=0
+    [[ -f "$conf" ]] || return 0
+    command -v docker >/dev/null 2>&1 || return 0
+
+    image="$(proxy_image "$dir")"
+    if [[ -z "$image" ]]; then
+        info "Образ nginx в compose не найден — пропускаю nginx -t."
+        return 0
+    fi
+
+    local mounts=(-v "$conf:/etc/nginx/nginx.conf:ro")
+    # Без сертификатов nginx -t падает на "cannot load certificate" даже при
+    # корректном синтаксисе. /etc/letsencrypt нужен целиком: в live/ симлинки в archive/.
+    [[ -d /etc/letsencrypt ]] && mounts+=(-v /etc/letsencrypt:/etc/letsencrypt:ro)
+    [[ -d "/etc/letsencrypt/live/$BASE_DOMAIN" ]] && \
+        mounts+=(-v "/etc/letsencrypt/live/$BASE_DOMAIN:/etc/nginx/ssl/$BASE_DOMAIN:ro")
+
+    log "Проверяю $conf через $image (nginx -t)..."
+    out=$(docker run --rm "${mounts[@]}" "$image" nginx -t 2>&1) || rc=$?
+    if [[ $rc -eq 0 ]]; then
+        log "nginx -t: конфиг валиден."
+        return 0
+    fi
+    warn "nginx -t забраковал конфиг:"
+    echo "$out" | sed 's/^/    /'
+    return 1
+}
+
+# --- Откат из бэкапа ---------------------------------------------------------
+# Вынесено из do_rollback, потому что тем же самым надо уметь ответить на
+# неудачный перезапуск прямо посреди основного прохода.
+restore_from_backup() {
+    local dir="$1" stored dest restored=0
+    if [[ ! -f "$dir/manifest" ]]; then
+        warn "В $dir нет манифеста — автоматический откат невозможен."
+        return 1
+    fi
+    while IFS=$'\t' read -r stored dest; do
+        [[ -n "$stored" && -f "$dir/$stored" ]] || continue
+        cp "$dir/$stored" "$dest"
+        log "Восстановлен $dest"
+        restored=$((restored + 1))
+    done < "$dir/manifest"
+    [[ $restored -gt 0 ]] || { warn "Манифест в $dir пуст или битый."; return 1; }
+    return 0
+}
+
+restart_current_layout() {
+    if [[ "$LAYOUT" == "docsrw" ]]; then
+        docsrw_restart
+    else
+        restart_stack
+    fi
+}
+
+# Откат предлагается, а не делается сам: это прод, и решение за человеком.
+offer_rollback() {
+    warn "$1"
+    if [[ -z "${BACKUP_DIR:-}" || ! -f "${BACKUP_DIR}/manifest" ]]; then
+        warn "Бэкапа для автоматического отката нет — разбирайся по логам выше."
+        return 1
+    fi
+    if [[ ! -t 0 ]]; then
+        warn "Нет терминала для вопроса. Откат вручную: $SCRIPT_NAME --rollback $BACKUP_DIR"
+        return 1
+    fi
+    local c
+    read -rp "$(echo -e "${C_BYELLOW}Откатить файлы из бэкапа и перезапустить? (y/N):${C_RESET} ")" c
+    if [[ "$c" != "y" && "$c" != "Y" ]]; then
+        warn "Оставляю как есть. Откат позже: $SCRIPT_NAME --rollback $BACKUP_DIR"
+        return 1
+    fi
+    restore_from_backup "$BACKUP_DIR" || return 1
+    step "Перезапуск после отката"
+    restart_current_layout
+    warn "Файлы вернулись к прежнему домену. Если панель уже обновлена по API — там верни домен вручную."
+    return 0
+}
+
 # --- Перезапуск контейнеров по роли -----------------------------------------
 # Вынесено в функцию, потому что этим же занимается --rollback.
 restart_stack() {
     cd "$TARGET_DIR"
-    local proxy_svc
+    local proxy_svc svc
     proxy_svc="$(egamesapi_proxy_service)"
+
+    local want=() missing=()
     case "$ROLE" in
-        panel)
-            log "Перезапускаю $proxy_svc и remnawave..."
-            docker compose down "$proxy_svc" remnawave 2>/dev/null || docker compose down
-            docker compose up -d
-            ;;
-        sub)
-            log "Перезапускаю $proxy_svc и remnawave-subscription-page..."
-            docker compose down "$proxy_svc" remnawave-subscription-page 2>/dev/null || docker compose down
-            docker compose up -d
-            ;;
-        panel_and_sub)
-            log "Перезапускаю все контейнеры compose-проекта (панель + подписка на одном сервере)..."
-            docker compose down
-            docker compose up -d
-            ;;
-        node)
-            # Полный down/up без имён сервисов — работает и для nginx, и для caddy.
-            log "Перезапускаю ноду (remnanode) и её nginx/caddy..."
-            docker compose down
-            docker compose up -d
-            ;;
+        panel)         want=("$proxy_svc" remnawave) ;;
+        sub)           want=("$proxy_svc" remnawave-subscription-page) ;;
+        panel_and_sub) want=("$proxy_svc" remnawave remnawave-subscription-page) ;;
+        node)          want=("$proxy_svc" remnanode) ;;
     esac
+    for svc in "${want[@]}"; do
+        have_service "$svc" || missing+=("$svc")
+    done
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        warn "В $TARGET_DIR/docker-compose.yml нет сервисов: ${missing[*]}"
+        warn "Реально объявлены: $(compose_services | tr '\n' ' ')"
+        warn "Перезапускаю проект целиком — если имена сервисов кастомные, проверь результат сам."
+    fi
+
+    log "Перезапускаю compose-проект в $TARGET_DIR..."
+    docker compose down
+
+    # У ноды Xray и decoy-сервер сидят в network_mode: host и могут просить один
+    # и тот же порт. При одновременном старте кто-то проигрывает гонку: в проде
+    # nginx получал "bind() to 0.0.0.0:8443 failed: Address already in use" и
+    # уходил в restart-loop на десятки секунд. Поэтому reverse-proxy поднимаем
+    # первым и ждём, пока он реально забиндит свои порты.
+    if [[ "$ROLE" == "node" ]] && have_service "$proxy_svc"; then
+        log "Сначала поднимаю $proxy_svc..."
+        docker compose up -d "$proxy_svc"
+        # shellcheck disable=SC2046
+        wait_for_ports $(proxy_listen_ports)
+    fi
+
+    docker compose up -d
 }
 
 expected_services() {
@@ -232,21 +385,53 @@ verify_deployment() {
         echo -e "  ${C_BGREEN}OK${C_RESET}   https://$NEW_DOMAIN — HTTP $code"
     fi
 
-    local running svc
-    if [[ "$LAYOUT" == "docsrw" ]]; then
-        # В docs.rw контейнеры разложены по нескольким compose-проектам, поэтому
-        # смотрим весь хост, а не один каталог.
-        running=$(docker ps --format '{{.Names}}' 2>/dev/null || true)
-    else
-        running=$(cd "$TARGET_DIR" && docker compose ps --status running 2>/dev/null || true)
-    fi
+    # Контейнер умеет быть "running" секунду и тут же уйти в перезапуск, поэтому
+    # смотрим не мгновенный статус, а ещё и рост RestartCount за паузу.
+    local svc cid state after i
+    local names=() ids=() before=() failed=()
     for svc in $(expected_services); do
-        if grep -qE "(^|[[:space:]/])${svc}([[:space:]]|$)" <<< "$running"; then
-            echo -e "  ${C_BGREEN}OK${C_RESET}   контейнер $svc запущен"
+        names+=("$svc")
+        ids+=("$(container_id "$svc")")
+    done
+    for cid in "${ids[@]:-}"; do
+        if [[ -z "$cid" ]]; then
+            before+=("-1")
         else
-            echo -e "  ${C_BRED}FAIL${C_RESET} контейнер $svc не запущен"
+            before+=("$(docker inspect -f '{{.RestartCount}}' "$cid" 2>/dev/null || echo -1)")
         fi
     done
+
+    sleep 5
+
+    for i in "${!names[@]}"; do
+        svc="${names[$i]}"; cid="${ids[$i]}"
+        if [[ -z "$cid" ]]; then
+            echo -e "  ${C_BRED}FAIL${C_RESET} контейнер $svc не найден"
+            failed+=("$svc"); continue
+        fi
+        state=$(docker inspect -f '{{.State.Status}}' "$cid" 2>/dev/null || echo unknown)
+        after=$(docker inspect -f '{{.RestartCount}}' "$cid" 2>/dev/null || echo -1)
+        if [[ "$state" != "running" ]]; then
+            echo -e "  ${C_BRED}FAIL${C_RESET} контейнер $svc — статус $state"
+            failed+=("$svc")
+        elif [[ "$after" -gt "${before[$i]}" ]]; then
+            echo -e "  ${C_BRED}FAIL${C_RESET} контейнер $svc перезапускается по кругу (RestartCount ${before[$i]} -> $after)"
+            failed+=("$svc")
+        else
+            echo -e "  ${C_BGREEN}OK${C_RESET}   контейнер $svc запущен"
+        fi
+    done
+
+    [[ ${#failed[@]} -eq 0 ]] && return 0
+
+    for svc in "${failed[@]}"; do
+        cid="$(container_id "$svc")"
+        [[ -n "$cid" ]] || continue
+        warn "Последние строки лога $svc:"
+        docker logs --tail=30 "$cid" 2>&1 | sed 's/^/    /' || true
+    done
+    offer_rollback "После перезапуска не поднялись: ${failed[*]}" || true
+    return 1
 }
 
 # --- Panel API ---------------------------------------------------------------
@@ -759,20 +944,10 @@ do_rollback() {
     # Манифест хранит точные исходные пути — единственный надёжный способ, когда
     # файлы приходят из разных каталогов (макет docsrw).
     if [[ -f "$ROLLBACK_DIR/manifest" ]]; then
-        while IFS=$'\t' read -r stored dest; do
-            [[ -n "$stored" && -f "$ROLLBACK_DIR/$stored" ]] || continue
-            cp "$ROLLBACK_DIR/$stored" "$dest"
-            log "Восстановлен $dest"
-            restored=$((restored + 1))
-        done < "$ROLLBACK_DIR/manifest"
-        [[ $restored -eq 0 ]] && err "Манифест в $ROLLBACK_DIR пуст или битый."
+        restore_from_backup "$ROLLBACK_DIR" || err "Откат из $ROLLBACK_DIR не выполнен."
 
         step "Перезапуск контейнеров"
-        if [[ "$LAYOUT" == "docsrw" ]]; then
-            docsrw_restart
-        else
-            restart_stack
-        fi
+        restart_current_layout
         echo -e "\n${C_BGREEN}${C_BOLD}✔ Откат выполнен.${C_RESET}"
         warn "Откат не трогает панель: если домен уже был изменён в Config Profile / Hosts, верни его там вручную."
         exit 0
@@ -1336,13 +1511,31 @@ log "Домен заменён в: ${MATCHED_FILES[*]}"
 
 fi  # конец блока применения локальных изменений (SKIP_LOCAL)
 
+# --- Проверка конфига до боевого перезапуска ----------------------------
+if ! $SKIP_LOCAL && [[ "$PROXY_KIND" == "nginx" ]]; then
+    NGINX_DIR="$TARGET_DIR"
+    [[ "$LAYOUT" == "docsrw" ]] && NGINX_DIR="${PROXY_DIR:-$TARGET_DIR}"
+    NGINX_CONF=""
+    for f in "$NGINX_DIR/nginx.conf" "$NGINX_DIR/nginx/nginx.conf"; do
+        [[ -f "$f" ]] && { NGINX_CONF="$f"; break; }
+    done
+
+    if [[ -n "$NGINX_CONF" ]] && ! validate_nginx_conf "$NGINX_DIR" "$NGINX_CONF"; then
+        # Не считаем вердикт nginx -t истиной в последней инстанции: конфиг с
+        # include внешних файлов или с сертификатом в непривычном месте может
+        # быть забракован и будучи рабочим. Решает человек, увидев вывод выше.
+        CONTINUE_ANYWAY="n"
+        [[ -t 0 ]] && read -rp "$(echo -e "${C_BYELLOW}Всё равно перезапускать? (y/N):${C_RESET} ")" CONTINUE_ANYWAY
+        if [[ "$CONTINUE_ANYWAY" != "y" && "$CONTINUE_ANYWAY" != "Y" ]]; then
+            offer_rollback "Перезапуск отменён: nginx -t не принял новый конфиг." || true
+            exit 1
+        fi
+    fi
+fi
+
 # --- Перезапуск ---------------------------------------------------------
 step "Шаг 3/3 — перезапуск контейнеров"
-if [[ "$LAYOUT" == "docsrw" ]]; then
-    docsrw_restart
-else
-    restart_stack
-fi
+restart_current_layout
 
 # --- Panel API ----------------------------------------------------------
 # Порядок: сначала локальные файлы + рестарт, только потом панель. Реальный
@@ -1372,8 +1565,16 @@ else
     fi
 fi
 
-verify_deployment
+# verify_deployment сам покажет логи и предложит откат, если что-то не поднялось,
+# поэтому "Готово" печатается только когда проверка реально прошла.
+if verify_deployment; then
 
 echo -e "\n${C_BGREEN}${C_BOLD}✔ Готово!${C_RESET} ${C_WHITE}${NEW_DOMAIN}${C_RESET} настроен."
 echo -e "${C_DIM}Логи:${C_RESET} ${C_CYAN}docker compose -f $TARGET_DIR/docker-compose.yml logs -f${C_RESET}"
 echo -e "${C_DIM}Откат:${C_RESET} ${C_CYAN}$SCRIPT_NAME --rollback $BACKUP_DIR${C_RESET}\n"
+
+else
+    echo -e "\n${C_BRED}${C_BOLD}Проверка не прошла.${C_RESET} Смотри вывод выше."
+    echo -e "${C_DIM}Откат:${C_RESET} ${C_CYAN}$SCRIPT_NAME --rollback $BACKUP_DIR${C_RESET}\n"
+    exit 1
+fi
