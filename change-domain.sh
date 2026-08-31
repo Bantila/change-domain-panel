@@ -132,6 +132,48 @@ egamesapi_detect_proxy() {
     return 0
 }
 
+# --- Что именно меняется в конфигах -----------------------------------------
+# Все правки файла собираются в ОДИН набор sed-выражений: и домен, и пути к
+# сертификату старого домена. Этот же набор используется для поиска затронутых
+# файлов, для diff, для бэкапа и для применения — поэтому список файлов и список
+# правок не могут разъехаться. Раньше пути к сертификату чинились отдельным
+# проходом и только в docker-compose.yml: в проде это дало починенный compose и
+# старый путь в nginx.conf, после чего nginx ушёл в restart-loop с
+# "cannot load certificate".
+PATCH_EXPR=()
+CERT_DIRS_FOUND=()
+
+build_patch_expr() {
+    PATCH_EXPR=(-e "s/${OLD_DOMAIN//./\\.}/${NEW_DOMAIN}/g")
+    CERT_DIRS_FOUND=()
+
+    local f cand
+    local all=""
+    for f in "${FILES_TO_PATCH[@]:-}"; do
+        [[ -f "$f" ]] || continue
+        # Каталог сертификата — последний сегмент пути: /etc/letsencrypt/live/<X>
+        # или смонтированный в контейнер /etc/nginx/ssl/<X>.
+        all+="$(grep -ohE '/etc/(letsencrypt/live|nginx/ssl)/[A-Za-z0-9._*-]+' "$f" 2>/dev/null | sed -E 's#.*/##' || true)"$'\n'
+    done
+
+    while read -r cand; do
+        [[ -n "$cand" ]] || continue
+        # <cand> — это сам старый домен либо его зона (wildcard-сертификат на
+        # example.com покрывает node.example.com и лежит в каталоге зоны).
+        [[ "$OLD_DOMAIN" == "$cand" || "$OLD_DOMAIN" == *".$cand" ]] || continue
+        PATCH_EXPR+=(-e "s#/etc/letsencrypt/live/${cand//./\\.}#/etc/letsencrypt/live/${BASE_DOMAIN}#g")
+        PATCH_EXPR+=(-e "s#/etc/nginx/ssl/${cand//./\\.}#/etc/nginx/ssl/${BASE_DOMAIN}#g")
+        CERT_DIRS_FOUND+=("$cand")
+    done < <(printf '%s' "$all" | awk 'NF && !seen[$0]++')
+}
+
+# Файл попадает в работу, если после всех правок его содержимое изменится, —
+# а не только если в нём встретился домен: путь к сертификату зоны домена не
+# содержит.
+file_will_change() {
+    ! sed "${PATCH_EXPR[@]}" "$1" | cmp -s - "$1"
+}
+
 # --- Перезапуск контейнеров по роли -----------------------------------------
 # Вынесено в функцию, потому что этим же занимается --rollback.
 restart_stack() {
@@ -1206,11 +1248,20 @@ if [[ ${#FILES_TO_PATCH[@]} -eq 0 ]] && ! $DOCSRW_NODE_BEST_EFFORT; then
     err "Не нашёл ни .env, ни docker-compose.yml, ни nginx.conf в $TARGET_DIR — проверь путь."
 fi
 
-log "Файлы, где встречается $OLD_DOMAIN:"
+# BASE_DOMAIN — каталог НОВОГО сертификата: зона при Cloudflare DNS-01 (wildcard)
+# и сам домен во всех остальных случаях. Ставится на шаге выпуска, но подстрахуемся.
+BASE_DOMAIN="${BASE_DOMAIN:-$NEW_DOMAIN}"
+build_patch_expr
+
+if [[ ${#CERT_DIRS_FOUND[@]} -gt 0 ]]; then
+    log "Пути к сертификату старого домена: ${CERT_DIRS_FOUND[*]} -> $BASE_DOMAIN"
+fi
+
+log "Файлы, которые изменятся:"
 MATCHED_FILES=()
 for f in "${FILES_TO_PATCH[@]:-}"; do
     [[ -n "$f" ]] || continue
-    if grep -q "$OLD_DOMAIN" "$f"; then
+    if file_will_change "$f"; then
         echo -e "   ${C_CYAN}-${C_RESET} $f"
         MATCHED_FILES+=("$f")
     fi
@@ -1223,7 +1274,7 @@ if [[ ${#MATCHED_FILES[@]} -eq 0 ]]; then
         warn "В docs.rw у ноды нет штатного макета с доменом — обнови его вручную там, где он у тебя настроен."
         SKIP_LOCAL=true
     else
-        warn "Строка $OLD_DOMAIN не найдена ни в одном файле. Проверь, что домен указан правильно (без https://, с/без www)."
+        warn "Ни в одном файле нечего менять: строка $OLD_DOMAIN не найдена. Проверь, что домен указан правильно (без https://, с/без www)."
         exit 1
     fi
 elif $DOCSRW_NODE_BEST_EFFORT && [[ ${#MATCHED_FILES[@]} -gt 1 ]]; then
@@ -1250,7 +1301,7 @@ log "Бэкап сохранён в $BACKUP_DIR"
 
 for f in "${MATCHED_FILES[@]}"; do
     echo -e "\n${C_BOLD}${C_WHITE}── diff для $f ──${C_RESET}"
-    diff -u "$f" <(sed "s/${OLD_DOMAIN//./\\.}/${NEW_DOMAIN}/g" "$f") \
+    diff -u "$f" <(sed "${PATCH_EXPR[@]}" "$f") \
         | sed -E "s/^(\+.*)/$(printf '%b' "${C_GREEN}")\1$(printf '%b' "${C_RESET}")/; s/^(-.*)/$(printf '%b' "${C_RED}")\1$(printf '%b' "${C_RESET}")/; s/^(@@.*@@)/$(printf '%b' "${C_CYAN}")\1$(printf '%b' "${C_RESET}")/" \
         || true
 done
@@ -1279,31 +1330,11 @@ read -rp "$(echo -e "${C_BYELLOW}Применить эти изменения? (
 [[ "$confirm" != "y" && "$confirm" != "Y" ]] && { warn "Отменено."; exit 1; }
 
 for f in "${MATCHED_FILES[@]}"; do
-    sed -i "s/${OLD_DOMAIN//./\\.}/${NEW_DOMAIN}/g" "$f"
+    sed -i "${PATCH_EXPR[@]}" "$f"
 done
 log "Домен заменён в: ${MATCHED_FILES[*]}"
 
 fi  # конец блока применения локальных изменений (SKIP_LOCAL)
-
-# --- Если docker-compose.yml монтирует сертификаты по старому домену (base или
-#        сам OLD_DOMAIN, в зависимости от того как ставился сертификат) — подставим
-#        пути на новый сертификат. Ищем ЛЮБУЮ строку /etc/letsencrypt/live/<что-то>,
-#        где <что-то> является префиксом OLD_DOMAIN (т.е. OLD_DOMAIN совпадает с ним
-#        или является его поддоменом) — без угадывания по количеству точек.
-# Только для egamesapi+nginx: в docs.rw сертификаты кладёт acme.sh по фиксированным
-# путям внутри proxy-каталога, а у любого Caddy они вообще внутри named volume,
-# так что /etc/letsencrypt/live там не встречается никогда.
-COMPOSE_FILE="$TARGET_DIR/docker-compose.yml"
-if [[ "$LAYOUT" == "egamesapi" && "$PROXY_KIND" != "caddy" && -f "$COMPOSE_FILE" ]]; then
-    OLD_CERT_DIRS=$(grep -oE "/etc/letsencrypt/live/[A-Za-z0-9.*-]+" "$COMPOSE_FILE" | sed 's#/etc/letsencrypt/live/##' | sort -u)
-    for cand in $OLD_CERT_DIRS; do
-        if [[ "$OLD_DOMAIN" == "$cand" || "$OLD_DOMAIN" == *".$cand" ]]; then
-            log "Найден смонтированный сертификат старого домена: $cand -> заменяю на $BASE_DOMAIN"
-            sed -i "s#/etc/letsencrypt/live/${cand//./\\.}#/etc/letsencrypt/live/${BASE_DOMAIN}#g" "$COMPOSE_FILE"
-            sed -i "s#/etc/nginx/ssl/${cand//./\\.}#/etc/nginx/ssl/${BASE_DOMAIN}#g" "$COMPOSE_FILE"
-        fi
-    done
-fi
 
 # --- Перезапуск ---------------------------------------------------------
 step "Шаг 3/3 — перезапуск контейнеров"
