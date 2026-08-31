@@ -14,7 +14,7 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
 # Вытаскиваем проверяемые функции, чтобы тест шёл по реальному коду, а не по копии.
-sed -n '/^build_patch_expr()/,/^}/p;/^file_will_change()/,/^}/p;/^panel_cookie_files()/,/^}/p;/^resolve_panel_cookie()/,/^}$/p' \
+sed -n '/^build_patch_expr()/,/^}/p;/^file_will_change()/,/^}/p;/^panel_cookie_files()/,/^}/p;/^resolve_panel_cookie()/,/^}$/p;/^cf_key_kind()/,/^}/p' \
     "$SCRIPT" > "$TMP/functions.sh"
 
 log() { :; }
@@ -134,6 +134,13 @@ check "URL панели очищен от query и /auth/login" "$PANEL_URL" "ht
 
 TARGET_DIR="$TMP/нет-такого"; PANEL_COOKIE=""; PANEL_URL="https://panel.example.com"
 if resolve_panel_cookie; then fail "cookie не должна была найтись"; else ok "нет cookie — нет ложной находки"; fi
+
+# --- 4. Тип ключа Cloudflare ----------------------------------------------
+echo "[4] распознавание ключа Cloudflare"
+check "Global API Key (37 hex)" "$(cf_key_kind 0123456789abcdef0123456789abcdef01234)" "global"
+check "API Token (40 символов)" "$(cf_key_kind Xy_9-AbCdEfGhIjKlMnOpQrStUvWxYz012345678)" "token"
+check "токен из одних строчных и цифр (40)" "$(cf_key_kind 0123456789abcdef0123456789abcdef01234567)" "token"
+check "мусор — не угадываем" "$(cf_key_kind короткий)" "unknown"
 
 echo
 if [[ $FAILED -eq 0 ]]; then

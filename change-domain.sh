@@ -43,6 +43,7 @@ CF_EMAIL=""
 CF_TOKEN=""
 CF_ZONE_NEW=""
 CF_ZONE_OLD=""
+CF_KEY_KIND=""    # token | global, определяется по формату ключа
 ACME_EMAIL=""
 DRY_RUN=false
 PANEL_URL=""       # https://panel.example.com, без /api
@@ -663,10 +664,46 @@ sync_panel() {
 }
 
 # --- Cloudflare: обновление A-записи тем же токеном, что и для DNS-01 --------
+# Тип ключа Cloudflare. Раньше решалось по наличию заглавных букв — признак
+# неформальный: Global API Key из одних цифр и строчных букв уезжал в ту же
+# ветку, что и токен. Реальные форматы: Global API Key — 37 hex-символов в
+# нижнем регистре, API Token — 40 символов из [A-Za-z0-9_-].
+cf_key_kind() {
+    local key="$1"
+    if [[ ${#key} -eq 37 && "$key" =~ ^[0-9a-f]+$ ]]; then
+        echo "global"
+    elif [[ ${#key} -eq 40 && "$key" =~ ^[A-Za-z0-9_-]+$ ]]; then
+        echo "token"
+    else
+        echo "unknown"
+    fi
+}
+
+# Если формат не опознан — спрашиваем, а не угадываем: ошибка тут стоит
+# провалившегося выпуска сертификата и невнятного 6003 от Cloudflare.
+cf_resolve_key_kind() {
+    CF_KEY_KIND="$(cf_key_kind "$CF_TOKEN")"
+    [[ "$CF_KEY_KIND" != "unknown" ]] && return 0
+
+    warn "Ключ Cloudflare не похож ни на API Token (40 символов), ни на Global API Key (37 hex)."
+    local c=""
+    [[ -t 0 ]] && read -rp "$(echo -e "${C_CYAN}Это API Token? (y/N — иначе Global API Key):${C_RESET} ")" c
+    if [[ "$c" == "y" || "$c" == "Y" ]]; then
+        CF_KEY_KIND="token"
+    elif [[ -n "$c" ]]; then
+        CF_KEY_KIND="global"
+    else
+        CF_KEY_KIND="token"
+        warn "Считаю ключ API Token. Если это Global API Key — перезапусти и ответь на вопрос."
+    fi
+    return 0
+}
+
 cf_update_dns() {
     need_jq
     local hdr=()
-    if [[ "$CF_TOKEN" =~ [A-Z] ]]; then
+    cf_resolve_key_kind
+    if [[ "$CF_KEY_KIND" == "token" ]]; then
         hdr=(-H "Authorization: Bearer $CF_TOKEN")
     else
         hdr=(-H "X-Auth-Email: $CF_EMAIL" -H "X-Auth-Key: $CF_TOKEN")
@@ -1295,8 +1332,9 @@ if [[ "$CERT_METHOD" == "cloudflare" ]]; then
     WILDCARD_DOMAIN="*.$BASE_DOMAIN"
 
     mkdir -p ~/.secrets/certbot
-    if [[ "$CF_TOKEN" =~ [A-Z] ]]; then
-        # похоже на API Token (Bearer)
+    cf_resolve_key_kind
+    log "Ключ Cloudflare распознан как: $CF_KEY_KIND"
+    if [[ "$CF_KEY_KIND" == "token" ]]; then
         cat > ~/.secrets/certbot/cloudflare.ini <<EOF
 dns_cloudflare_api_token = $CF_TOKEN
 EOF
