@@ -44,12 +44,15 @@ CF_TOKEN=""
 CF_ZONE_NEW=""
 CF_ZONE_OLD=""
 CF_KEY_KIND=""    # token | global, определяется по формату ключа
+PANEL_CHANGED_PROFILES=()  # uuid Config Profile, где домен реально поменялся
+PANEL_TOUCHED_NODES=()     # uuid нод, которым поменяли адрес
 ACME_EMAIL=""
 DRY_RUN=false
 PANEL_URL=""       # https://panel.example.com, без /api
 PANEL_TOKEN=""     # API-ключ панели (Настройки -> API Tokens)
 PANEL_COOKIE=""    # секретная cookie eGamesAPI вида ИМЯ=ЗНАЧЕНИЕ
 SKIP_PANEL=false   # --no-panel: не трогать Panel API вообще
+SKIP_NODE_RESTART=false  # --no-node-restart: не перезапускать ноды после правки профиля
 CF_UPDATE_DNS=false
 ROLLBACK_DIR=""
 # egamesapi — исходный макет: .env + docker-compose.yml + nginx.conf в одном --dir,
@@ -536,6 +539,7 @@ panel_auth() {
 # внутри которой он оказался подстрокой.
 panel_patch_config_profiles() {
     local list uuid full config new resp changed=0
+    PANEL_CHANGED_PROFILES=()
     list=$(panel_api GET /api/config-profiles)
     if ! echo "$list" | jq -e '.response.configProfiles' >/dev/null 2>&1; then
         warn "Не удалось получить список Config Profile: ${list:-<пустой ответ>}"
@@ -577,6 +581,7 @@ panel_patch_config_profiles() {
             "$(jq -n --arg uuid "$uuid" --argjson config "$new" '{uuid: $uuid, config: $config}')")
         if echo "$resp" | jq -e '.response.uuid' >/dev/null 2>&1; then
             log "Config Profile $uuid обновлён."
+            PANEL_CHANGED_PROFILES+=("$uuid")
             changed=$((changed + 1))
         else
             warn "Не удалось обновить Config Profile $uuid: ${resp:-<пустой ответ>}"
@@ -627,6 +632,7 @@ panel_patch_hosts() {
 # тогда менять нечего, поэтому фильтруем по точному совпадению, как и в Hosts.
 panel_patch_nodes() {
     local node resp changed=0 list
+    PANEL_TOUCHED_NODES=()
     list=$(panel_api GET /api/nodes)
     if ! echo "$list" | jq -e '.response' >/dev/null 2>&1; then
         warn "Не удалось получить список нод: ${list:-<пустой ответ>}"
@@ -639,6 +645,7 @@ panel_patch_nodes() {
             "$(echo "$node" | jq -c --arg new "$NEW_DOMAIN" '{uuid: .uuid, address: $new}')")
         if echo "$resp" | jq -e '.response.uuid' >/dev/null 2>&1; then
             log "Нода $(echo "$node" | jq -r '.name // .uuid') переведена на $NEW_DOMAIN."
+            PANEL_TOUCHED_NODES+=("$(echo "$node" | jq -r '.uuid')")
             changed=$((changed + 1))
         else
             warn "Не удалось обновить ноду $(echo "$node" | jq -r '.uuid'): ${resp:-<пустой ответ>}"
@@ -652,6 +659,63 @@ panel_patch_nodes() {
     return 0
 }
 
+# Ноды, которые надо перезапустить: сидящие на изменённых Config Profile плюс те,
+# у кого мы поменяли адрес. Фильтр вынесен отдельной функцией, чтобы его можно
+# было проверить тестом на фикстуре, а не только на живой панели.
+# stdin — ответ GET /api/nodes; $1 — JSON-массив uuid профилей; $2 — JSON-массив uuid нод.
+nodes_to_restart() {
+    jq -r --argjson profiles "$1" --argjson nodes "$2" '
+        .response[]?
+        | . as $n
+        | select(($profiles | index($n.configProfile.activeConfigProfileUuid // ""))
+                 or ($nodes | index($n.uuid)))
+        | [$n.uuid, ($n.name // $n.uuid)] | @tsv'
+}
+
+# Правки Config Profile ноды сами не подхватывают: панель отдаёт конфиг при
+# перезапуске ноды. Без этого шага домен в панели новый, а нода до ближайшего
+# рестарта продолжает работать со старым serverNames.
+panel_restart_nodes() {
+    local profiles_json nodes_json list uuid name resp restarted=0
+
+    if [[ ${#PANEL_CHANGED_PROFILES[@]} -eq 0 && ${#PANEL_TOUCHED_NODES[@]} -eq 0 ]]; then
+        return 0
+    fi
+    if $SKIP_NODE_RESTART; then
+        warn "--no-node-restart: ноды не перезапускаю. Новый конфиг доедет только при их следующем рестарте."
+        return 0
+    fi
+
+    profiles_json=$(printf '%s\n' "${PANEL_CHANGED_PROFILES[@]:-}" | jq -Rsc 'split("\n") | map(select(. != ""))')
+    nodes_json=$(printf '%s\n' "${PANEL_TOUCHED_NODES[@]:-}" | jq -Rsc 'split("\n") | map(select(. != ""))')
+
+    list=$(panel_api GET /api/nodes)
+    if ! echo "$list" | jq -e '.response' >/dev/null 2>&1; then
+        warn "Не удалось получить список нод для перезапуска: ${list:-<пустой ответ>}"
+        return 1
+    fi
+
+    while IFS=$'\t' read -r uuid name; do
+        [[ -n "$uuid" ]] || continue
+        # forceRestart=false — то же, что делает кнопка перезапуска в панели.
+        resp=$(panel_api POST "/api/nodes/$uuid/actions/restart" '{"forceRestart":false}')
+        # Пустое тело здесь — это 202/204 без содержимого, а не блокировка cookie:
+        # до этого места мы уже успешно ходили в API.
+        if [[ -z "$resp" ]] || echo "$resp" | jq -e '.response' >/dev/null 2>&1; then
+            log "Нода $name перезапущена — конфиг с новым доменом уехал на неё."
+            restarted=$((restarted + 1))
+        else
+            warn "Не удалось перезапустить ноду $name: $resp"
+            return 1
+        fi
+    done < <(echo "$list" | nodes_to_restart "$profiles_json" "$nodes_json")
+
+    if [[ $restarted -eq 0 ]]; then
+        info "Ноды на изменённых профилях не найдены — перезапускать нечего."
+    fi
+    return 0
+}
+
 sync_panel() {
     step "Обновление домена в панели Remnawave ($PANEL_URL)"
     need_jq
@@ -660,6 +724,9 @@ sync_panel() {
     panel_patch_config_profiles || rc=1
     panel_patch_hosts || rc=1
     panel_patch_nodes || rc=1
+    # Перезапуск последним: сначала в панели должно лежать всё новое, включая
+    # адрес самой ноды, и только потом нода идёт за конфигом.
+    panel_restart_nodes || rc=1
     return $rc
 }
 
@@ -1091,6 +1158,9 @@ usage() {
     echo "                 панели ищется автоматически в nginx.conf/Caddyfile; на ноде — передай флагом или"
     echo "                 вставь в --panel-url ссылку вида https://panel.example.com/auth/login?ИМЯ=ЗНАЧЕНИЕ."
     echo "  --no-panel     Не трогать Panel API вообще (только файлы на диске, как в старом поведении)."
+    echo "  --no-node-restart  Не перезапускать ноды после правки Config Profile. По умолчанию ноды,"
+    echo "                 сидящие на изменённых профилях, перезапускаются — иначе они продолжат"
+    echo "                 работать со старым доменом до ближайшего рестарта."
     echo ""
     echo "  --cf-update-dns  Дополнительно обновить A-запись нового домена в Cloudflare тем же токеном,"
     echo "                   что используется для DNS-01 (спросит IP интерактивно)."
@@ -1118,6 +1188,7 @@ while [[ $# -gt 0 ]]; do
         --panel-token) PANEL_TOKEN="$2"; shift 2 ;;
         --panel-cookie) PANEL_COOKIE="$2"; shift 2 ;;
         --no-panel) SKIP_PANEL=true; shift ;;
+        --no-node-restart) SKIP_NODE_RESTART=true; shift ;;
         --cf-update-dns) CF_UPDATE_DNS=true; shift ;;
         --layout) LAYOUT="$2"; shift 2 ;;
         --proxy) PROXY_KIND="$2"; shift 2 ;;
@@ -1531,6 +1602,9 @@ if $DRY_RUN; then
         log "[dry-run] would PATCH ${PANEL_URL%/}/api/config-profiles — serverNames/dest/host: $OLD_DOMAIN -> $NEW_DOMAIN"
         log "[dry-run] would PATCH ${PANEL_URL%/}/api/hosts — address/sni/host: $OLD_DOMAIN -> $NEW_DOMAIN"
         log "[dry-run] would PATCH ${PANEL_URL%/}/api/nodes — address: $OLD_DOMAIN -> $NEW_DOMAIN"
+        if ! $SKIP_NODE_RESTART; then
+            log "[dry-run] would POST ${PANEL_URL%/}/api/nodes/<uuid>/actions/restart — ноды на изменённых профилях"
+        fi
     fi
     log "[dry-run] Изменения не применены."
     exit 0

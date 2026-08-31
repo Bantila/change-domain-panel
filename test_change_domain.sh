@@ -14,7 +14,7 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
 # Вытаскиваем проверяемые функции, чтобы тест шёл по реальному коду, а не по копии.
-sed -n '/^build_patch_expr()/,/^}/p;/^file_will_change()/,/^}/p;/^panel_cookie_files()/,/^}/p;/^resolve_panel_cookie()/,/^}$/p;/^cf_key_kind()/,/^}/p' \
+sed -n '/^build_patch_expr()/,/^}/p;/^file_will_change()/,/^}/p;/^panel_cookie_files()/,/^}/p;/^resolve_panel_cookie()/,/^}$/p;/^cf_key_kind()/,/^}/p;/^nodes_to_restart()/,/^}/p' \
     "$SCRIPT" > "$TMP/functions.sh"
 
 log() { :; }
@@ -141,6 +141,27 @@ check "Global API Key (37 hex)" "$(cf_key_kind 0123456789abcdef0123456789abcdef0
 check "API Token (40 символов)" "$(cf_key_kind Xy_9-AbCdEfGhIjKlMnOpQrStUvWxYz012345678)" "token"
 check "токен из одних строчных и цифр (40)" "$(cf_key_kind 0123456789abcdef0123456789abcdef01234567)" "token"
 check "мусор — не угадываем" "$(cf_key_kind короткий)" "unknown"
+
+# --- 5. Какие ноды перезапускать после правки Config Profile ---------------
+# Перезапускать надо только ноды на изменённых профилях и те, которым поменяли
+# адрес: чужие ноды панели трогать незачем.
+if command -v jq >/dev/null 2>&1; then
+    echo "[5] выбор нод для перезапуска"
+    cat > "$TMP/nodes.json" <<'EOF'
+{"response":[
+  {"uuid":"n1","name":"Steal","address":"node.example.com","configProfile":{"activeConfigProfileUuid":"p1"}},
+  {"uuid":"n2","name":"Другая","address":"1.2.3.4","configProfile":{"activeConfigProfileUuid":"p2"}},
+  {"uuid":"n3","name":"БезПрофиля","address":"old.example.com","configProfile":{"activeConfigProfileUuid":null}}
+]}
+EOF
+    GOT=$(nodes_to_restart '["p1"]' '["n3"]' < "$TMP/nodes.json" | tr -d '\r' | tr '\t' '=' | tr '\n' ' ')
+    check "нода на изменённом профиле + нода со смененным адресом" "$GOT" "n1=Steal n3=БезПрофиля "
+
+    GOT=$(nodes_to_restart '[]' '[]' < "$TMP/nodes.json" | tr -d '\r' | tr '\n' ' ')
+    check "ничего не меняли — никого не перезапускаем" "$GOT" ""
+else
+    echo "[5] выбор нод для перезапуска — пропущено, нет jq"
+fi
 
 echo
 if [[ $FAILED -eq 0 ]]; then
